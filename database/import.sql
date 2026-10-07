@@ -42,7 +42,7 @@ CREATE TABLE `admin` (
 LOCK TABLES `admin` WRITE;
 /*!40000 ALTER TABLE `admin` DISABLE KEYS */;
 INSERT INTO `admin` VALUES
-(1,'admin@admin.com','b','XhbfYkIAC1bYGhUodfJppmRCEUyGQJCZ','admin','2024-01-31 13:54:21',1);
+(1,'admin@admin.com','$2b$10$puhzPzFDRRCQuJy1yzRYdupXydUi7Fh8HfDanw5Q37suZXUbq99CG','XhbfYkIAC1bYGhUodfJppmRCEUyGQJCZ','admin','2024-01-31 13:54:21',1);
 /*!40000 ALTER TABLE `admin` ENABLE KEYS */;
 UNLOCK TABLES;
 
