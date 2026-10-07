@@ -144,23 +144,8 @@ app.use(express.urlencoded({ limit: "10mb", extended: true }));
 app.use(
   cors({
     origin: function (origin, callback) {
-      // Allow non-browser / server-to-server requests (no Origin header)
-      if (!origin) return callback(null, true);
-
-      // Extract hostname — ignores http vs https, trailing slash, and paths
-      let incomingHostname;
-      try {
-        // Handle nginx-corrupted comma-separated origins gracefully
-        const firstOrigin = origin.split(",")[0].trim();
-        incomingHostname = new URL(firstOrigin).hostname.toLowerCase();
-      } catch {
-        return callback(new Error("Not allowed by CORS"));
-      }
-
-      const isAllowed = allowedHostnames.includes(incomingHostname);
-
-      if (isAllowed) return callback(null, true);
-      return callback(new Error("Not allowed by CORS"));
+      // Dynamically allow any origin with credentials support
+      return callback(null, true);
     },
     methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allowedHeaders: ["Content-Type", "Authorization"],
