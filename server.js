@@ -3,7 +3,6 @@ require("dotenv").config({ path: path.resolve(__dirname, ".env") });
 const express = require("express");
 const cors = require("cors");
 const fs = require("fs");
-const path = require("path");
 const fileUpload = require("express-fileupload");
 const nodeCleanup = require("node-cleanup");
 const { initCampaign } = require("./loops/campaignBeta.js");
