@@ -40,7 +40,7 @@
     "pino": "^9.6.0",
     "qrcode": "^1.5.4",
     "randomstring": "^1.2.3",
-    "sharp": "^0.32.6",
+    "sharp": "^0.33.5",
     "socket.io": "^4.7.4",
     "stripe": "^12.13.0",
     "telegram": "^2.26.22",
