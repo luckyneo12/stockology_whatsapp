@@ -178,6 +178,7 @@ app.use("/api/kaban", require("./routes/kaban"));
 app.use("/api/waform", require("./routes/waform"));
 app.use("/api/messenger", require("./routes/messenger"));
 app.use("/api/qr_campaign", require("./routes/qrCampaign"));
+app.use("/api/sso", require("./routes/sso"));
 
 // ─── Media Streaming Middleware ───────────────────────────────────────────────
 const createMediaMiddleware = (folderPath) => {
