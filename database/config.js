@@ -1,5 +1,8 @@
-require("dotenv").config();
+const path = require("path");
+require("dotenv").config({ path: path.resolve(__dirname, "../.env") });
 const mysql = require("mysql2");
+
+console.log(`[DB INFO] Host: ${process.env.DBHOST || 'localhost'}, DB: ${process.env.DBNAME}, User: ${process.env.DBUSER}, Has Password: ${Boolean(process.env.DBPASS)}`);
 
 const con = mysql.createPool({
   connectionLimit: 200,
