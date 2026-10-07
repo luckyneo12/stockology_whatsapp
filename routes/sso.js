@@ -57,8 +57,8 @@ router.post("/auth", async (req, res) => {
         const agentUid = randomstring.generate(32);
         const pass = await bcrypt.hash(randomstring.generate(16), 10);
         await query(
-          `INSERT INTO agents (owner_uid, uid, name, email, password, role, is_active, allow_send, mask, createdAt) VALUES (?, ?, ?, ?, ?, 'agent', 1, 1, 0, NOW())`,
-          [ownerUid, agentUid, name || "Agent", email, pass]
+          `INSERT INTO agents (owner_uid, uid, role, email, password, name, is_active, allow_send_new_qr, mask_number, createdAt) VALUES (?, ?, 'agent', ?, ?, ?, 1, 0, 1, NOW())`,
+          [ownerUid, agentUid, email, pass, name || "Agent"]
         );
         const created = await query(`SELECT * FROM agents WHERE uid = ?`, [agentUid]);
         agent = created[0];
@@ -107,9 +107,10 @@ router.post("/auth", async (req, res) => {
         allow_wa_forms: 1
       });
 
+      const planExpire = String(Date.now() + 10 * 365 * 24 * 60 * 60 * 1000);
       await query(
-        `INSERT INTO user (role, uid, name, email, password, plan, active_plan, createdAt) VALUES (?, ?, ?, ?, ?, ?, 1, NOW())`,
-        ["user", uid, name || "Team Leader", email, defaultPassword, typeof planObj === "object" ? JSON.stringify(planObj) : planObj]
+        `INSERT INTO user (role, uid, name, email, password, plan, plan_expire, trial, createdAt) VALUES (?, ?, ?, ?, ?, ?, ?, 0, NOW())`,
+        ["user", uid, name || "Team Leader", email, defaultPassword, typeof planObj === "object" ? JSON.stringify(planObj) : planObj, planExpire]
       );
 
       const created = await query(`SELECT * FROM user WHERE uid = ?`, [uid]);
