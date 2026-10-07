@@ -12,11 +12,16 @@
       } else {
         localStorage.setItem('wacrm_user', token);
       }
+      var targetPath = role === 'admin' ? '/admin' : role === 'agent' ? '/agent' : '/user';
       params.delete('sso_token');
       params.delete('sso_role');
       var rest = params.toString();
-      var cleanUrl = window.location.pathname + (rest ? '?' + rest : '') + window.location.hash;
-      window.history.replaceState({}, document.title, cleanUrl);
+      var cleanUrl = targetPath + (rest ? '?' + rest : '') + window.location.hash;
+      if (window.location.pathname !== targetPath) {
+        window.location.replace(cleanUrl);
+      } else {
+        window.history.replaceState({}, document.title, cleanUrl);
+      }
     }
   } catch(e) {}
 })();
