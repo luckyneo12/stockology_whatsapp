@@ -1,5 +1,6 @@
 const path = require("path");
 require("dotenv").config({ path: path.resolve(__dirname, ".env") });
+process.env.JWTKEY = process.env.JWTKEY || "NCRUp5hKovUAcZd9OwIw0BCKmjZj9JxpNCRUp5hKovUAcZd9OwIw0BCKmjZj9JxpNCRUp5hKovUAcZd9OwIw0BCKmjZj9Jxp";
 const express = require("express");
 const cors = require("cors");
 const fs = require("fs");
@@ -240,7 +241,7 @@ app.get("*", function (request, response) {
 });
 
 // ─── Server ───────────────────────────────────────────────────────────────────
-const server = app.listen(process.env.PORT || 3010, () => {
+const server = app.listen(process.env.PORT || 8001, () => {
   isLogging &&
     console.log(`WaCrm server is running on port ${process.env.PORT}`);
 
