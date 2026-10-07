@@ -4,7 +4,7 @@ const mysql = require("mysql2");
 
 const DBHOST = process.env.DBHOST || "127.0.0.1";
 const DBPORT = Number(process.env.DBPORT) || 3306;
-const DBUSER = process.env.DBUSER || "root";
+const DBUSER = process.env.DBUSER || "whatscrm";
 const DBPASS = process.env.DBPASS !== undefined ? process.env.DBPASS : "Admin@123456";
 const DBNAME = process.env.DBNAME || "stockology_whatscrm";
 
