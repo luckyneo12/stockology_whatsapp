@@ -7,10 +7,153 @@ const { sign } = require("jsonwebtoken");
 // GET /api/sso/plans - Return all available plans for CRM allocation
 router.get("/plans", async (req, res) => {
   try {
-    const plans = await query(
-      "SELECT id, title, short_description, price, qr_account, contact_limit, allow_chatbot, wa_warmer, allow_api FROM plan ORDER BY id ASC"
-    );
+    const plans = await query("SELECT * FROM plan ORDER BY id ASC");
     res.json({ success: true, plans });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// POST /api/sso/plans - Create a new plan from CRM
+router.post("/plans", async (req, res) => {
+  try {
+    const { secret, ...payload } = req.body;
+    const expectedSecret = process.env.SSO_SECRET || process.env.JWTKEY;
+    if (secret && secret !== expectedSecret) {
+      return res.status(401).json({ success: false, msg: "Unauthorized" });
+    }
+
+    const {
+      title,
+      short_description,
+      allow_tag,
+      allow_note,
+      allow_chatbot,
+      contact_limit,
+      allow_api,
+      is_trial,
+      price,
+      price_strike,
+      plan_duration_in_days,
+      qr_account,
+      wa_warmer,
+      rest_api_qr,
+      instagram_inbox,
+      telegram_inbox,
+      allow_wa_forms,
+    } = payload;
+
+    if (!title) {
+      return res.status(400).json({ success: false, msg: "Plan title is required" });
+    }
+
+    const result = await query(
+      `INSERT INTO plan (title, short_description, allow_tag, allow_note, allow_chatbot, 
+        contact_limit, allow_api, is_trial, price, price_strike, plan_duration_in_days, 
+        qr_account, wa_warmer, rest_api_qr, instagram_inbox, telegram_inbox, allow_wa_forms) 
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      [
+        title,
+        short_description || "",
+        allow_tag ? 1 : 0,
+        allow_note ? 1 : 0,
+        allow_chatbot ? 1 : 0,
+        parseInt(contact_limit || 1000),
+        allow_api ? 1 : 0,
+        is_trial ? 1 : 0,
+        is_trial ? 0 : parseInt(price || 0),
+        price_strike || null,
+        parseInt(plan_duration_in_days || 365),
+        parseInt(qr_account || 1),
+        wa_warmer ? 1 : 0,
+        rest_api_qr ? 1 : 0,
+        instagram_inbox ? 1 : 0,
+        telegram_inbox ? 1 : 0,
+        allow_wa_forms ? 1 : 0,
+      ]
+    );
+
+    const inserted = await query("SELECT * FROM plan WHERE id = ?", [result.insertId]);
+    res.json({ success: true, plan: inserted[0] });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// PUT /api/sso/plans/:id - Update an existing plan from CRM
+router.put("/plans/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { secret, ...payload } = req.body;
+    const expectedSecret = process.env.SSO_SECRET || process.env.JWTKEY;
+    if (secret && secret !== expectedSecret) {
+      return res.status(401).json({ success: false, msg: "Unauthorized" });
+    }
+
+    const {
+      title,
+      short_description,
+      allow_tag,
+      allow_note,
+      allow_chatbot,
+      contact_limit,
+      allow_api,
+      is_trial,
+      price,
+      price_strike,
+      plan_duration_in_days,
+      qr_account,
+      wa_warmer,
+      rest_api_qr,
+      instagram_inbox,
+      telegram_inbox,
+      allow_wa_forms,
+    } = payload;
+
+    await query(
+      `UPDATE plan SET 
+        title = ?, short_description = ?, allow_tag = ?, allow_note = ?,
+        allow_chatbot = ?, contact_limit = ?, allow_api = ?, is_trial = ?,
+        price = ?, price_strike = ?, plan_duration_in_days = ?,
+        qr_account = ?, wa_warmer = ?, rest_api_qr = ?,
+        instagram_inbox = ?, telegram_inbox = ?,
+        allow_wa_forms = ?
+       WHERE id = ?`,
+      [
+        title,
+        short_description || "",
+        allow_tag ? 1 : 0,
+        allow_note ? 1 : 0,
+        allow_chatbot ? 1 : 0,
+        parseInt(contact_limit || 0),
+        allow_api ? 1 : 0,
+        is_trial ? 1 : 0,
+        is_trial ? 0 : parseInt(price || 0),
+        price_strike || null,
+        parseInt(plan_duration_in_days || 1),
+        parseInt(qr_account || 0),
+        wa_warmer ? 1 : 0,
+        rest_api_qr ? 1 : 0,
+        instagram_inbox ? 1 : 0,
+        telegram_inbox ? 1 : 0,
+        allow_wa_forms ? 1 : 0,
+        id,
+      ]
+    );
+
+    const updated = await query("SELECT * FROM plan WHERE id = ?", [id]);
+    res.json({ success: true, plan: updated[0] });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// DELETE /api/sso/plans/:id - Delete a plan from CRM
+router.delete("/plans/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    await query("DELETE FROM plan WHERE id = ?", [id]);
+    res.json({ success: true, msg: "Plan deleted" });
   } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
