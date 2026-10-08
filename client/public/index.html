@@ -1,22 +1,113 @@
 <!doctype html><html lang="en"><head><script>
 (function(){
   try {
+    var isEmbedded = false;
+    try {
+      isEmbedded = window.self !== window.top;
+    } catch(err) {
+      isEmbedded = true;
+    }
+
     var params = new URLSearchParams(window.location.search);
-    var token = params.get('sso_token');
-    var role = params.get('sso_role') || 'user';
-    if (token) {
-      if (role === 'admin') {
-        localStorage.setItem('wacrm_admin', token);
-      } else if (role === 'agent') {
-        localStorage.setItem('wacrm_agent', token);
-      } else {
-        localStorage.setItem('wacrm_user', token);
+    if (params.get("embedded") === "true" || params.get("hide_nav") === "true") {
+      isEmbedded = true;
+    }
+
+    if (isEmbedded) {
+      document.documentElement.classList.add("is-embedded-hub");
+
+      var style = document.createElement("style");
+      style.id = "wacrm-embed-clean-css";
+      style.textContent = `
+        html.is-embedded-hub nav,
+        html.is-embedded-hub .MuiDrawer-root,
+        html.is-embedded-hub .MuiDrawer-docked,
+        html.is-embedded-hub [role="navigation"] {
+          display: none !important;
+          width: 0 !important;
+          visibility: hidden !important;
+          pointer-events: none !important;
+        }
+
+        html.is-embedded-hub header,
+        html.is-embedded-hub .MuiAppBar-root,
+        html.is-embedded-hub .MuiToolbar-root,
+        html.is-embedded-hub main > div[style*="position: sticky"],
+        html.is-embedded-hub main > div[style*="position:sticky"],
+        html.is-embedded-hub main > div:first-child:not([style*="padding"]) {
+          display: none !important;
+          height: 0 !important;
+          min-height: 0 !important;
+          visibility: hidden !important;
+          pointer-events: none !important;
+        }
+
+        html.is-embedded-hub main {
+          padding-left: 0 !important;
+          padding-right: 0 !important;
+          margin-left: 0 !important;
+          margin-right: 0 !important;
+          width: 100% !important;
+          max-width: 100% !important;
+          min-width: 0 !important;
+        }
+
+        html.is-embedded-hub body, html.is-embedded-hub #root {
+          overflow-x: hidden !important;
+        }
+      `;
+      document.head.appendChild(style);
+
+      function enforceCleanEmbedded() {
+        var navs = document.querySelectorAll("nav, .MuiDrawer-root, header, .MuiAppBar-root");
+        for (var i = 0; i < navs.length; i++) {
+          navs[i].style.setProperty("display", "none", "important");
+        }
+        var mains = document.querySelectorAll("main");
+        for (var j = 0; j < mains.length; j++) {
+          var m = mains[j];
+          m.style.setProperty("padding-left", "0px", "important");
+          m.style.setProperty("padding-right", "0px", "important");
+          m.style.setProperty("margin-left", "0px", "important");
+          m.style.setProperty("width", "100%", "important");
+          for (var k = 0; k < m.children.length; k++) {
+            var child = m.children[k];
+            var computed = window.getComputedStyle(child);
+            if (computed.position === "sticky" || (child.getAttribute("style") && child.getAttribute("style").indexOf("sticky") !== -1)) {
+              child.style.setProperty("display", "none", "important");
+            }
+          }
+        }
       }
-      var targetPath = role === 'admin' ? '/admin' : role === 'agent' ? '/agent' : '/user';
-      params.delete('sso_token');
-      params.delete('sso_role');
+
+      if (document.readyState === "loading") {
+        document.addEventListener("DOMContentLoaded", enforceCleanEmbedded);
+      } else {
+        enforceCleanEmbedded();
+      }
+
+      var observer = new MutationObserver(enforceCleanEmbedded);
+      observer.observe(document.documentElement, { childList: true, subtree: true });
+    }
+
+    var token = params.get("sso_token");
+    var role = params.get("sso_role") || "user";
+    if (token) {
+      if (role === "admin") {
+        localStorage.setItem("wacrm_admin", token);
+      } else if (role === "agent") {
+        localStorage.setItem("wacrm_agent", token);
+      } else {
+        localStorage.setItem("wacrm_user", token);
+      }
+      var targetPath = role === "admin" ? "/admin" : role === "agent" ? "/agent" : "/user";
+      params.delete("sso_token");
+      params.delete("sso_role");
+      if (isEmbedded) {
+        params.set("embedded", "true");
+      }
       var rest = params.toString();
-      var cleanUrl = targetPath + (rest ? '?' + rest : '') + window.location.hash;
+      var cleanUrl = targetPath + (rest ? "?" + rest : "") + window.location.hash;
       if (window.location.pathname !== targetPath) {
         window.location.replace(cleanUrl);
       } else {
