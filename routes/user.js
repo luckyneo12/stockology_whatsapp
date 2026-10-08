@@ -1,3 +1,4 @@
+const { verifyWithCrm } = require("../helper/crm-auth.js");
 const router = require("express").Router();
 const { query } = require("../database/dbpromise.js");
 const randomstring = require("randomstring");
@@ -368,35 +369,62 @@ router.post("/login", async (req, res) => {
       });
     }
 
-    // check for user
-    const userFind = await query(`SELECT * FROM user WHERE email = ?`, [email]);
-    if (userFind.length < 1) {
+    const cleanEmail = email.trim().toLowerCase();
+    let userFind = await query(`SELECT * FROM user WHERE LOWER(email) = ?`, [cleanEmail]);
+    let isValid = false;
+
+    if (userFind.length > 0) {
+      isValid = await bcrypt.compare(password, userFind[0].password);
+    }
+
+    // ── Fallback to CRM Backend Authentication ────────────────────────
+    if (!isValid) {
+      const crmUser = await verifyWithCrm(cleanEmail, password);
+      if (crmUser) {
+        const hashed = await bcrypt.hash(password, 10);
+        if (userFind.length > 0) {
+          await query(`UPDATE user SET password = ? WHERE uid = ?`, [hashed, userFind[0].uid]);
+          isValid = true;
+        } else {
+          const uid = randomstring.generate(32);
+          const defaultPlan = JSON.stringify({
+            title: "CRM Platinum Plan",
+            allow_tag: 1, allow_note: 1, allow_chatbot: 1,
+            contact_limit: 50000, allow_api: 1, qr_account: 24,
+            wa_warmer: 1, rest_api_qr: 1, allow_wa_forms: 1
+          });
+          const planExpire = String(Date.now() + 10 * 365 * 24 * 60 * 60 * 1000);
+          await query(
+            "INSERT INTO user (role, uid, name, email, password, plan, plan_expire, trial, createdAt) VALUES ('user', ?, ?, ?, ?, ?, ?, 0, NOW())",
+            [uid, crmUser.fullName || crmUser.name || cleanEmail.split("@")[0], cleanEmail, hashed, defaultPlan, planExpire]
+          );
+          userFind = await query(`SELECT * FROM user WHERE uid = ?`, [uid]);
+          isValid = true;
+        }
+      }
+    }
+
+    if (!isValid || userFind.length < 1) {
       return res.json({ msg: "Invalid credentials" });
     }
 
-    const compare = await bcrypt.compare(password, userFind[0].password);
-
-    if (!compare) {
-      return res.json({ msg: "Invalid credentials" });
-    } else {
-      const token = sign(
-        {
-          uid: userFind[0].uid,
-          role: "user",
-          tokenVersion: userFind[0].tokenVersion || 0,
-        },
-        process.env.JWTKEY,
-        {
-          expiresIn: "7d",
-        },
-      );
-      res.json({
-        success: true,
-        token,
-      });
-    }
+    const token = sign(
+      {
+        uid: userFind[0].uid,
+        role: "user",
+        tokenVersion: userFind[0].tokenVersion || 0,
+      },
+      process.env.JWTKEY,
+      {
+        expiresIn: "7d",
+      },
+    );
+    res.json({
+      success: true,
+      token,
+    });
   } catch (err) {
-    res.json({ success: false, msg: "something went wrong", err });
+    res.json({ success: false, msg: "something went wrong", err: err?.message });
     logger.log(err);
   }
 });

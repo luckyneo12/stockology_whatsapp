@@ -1,3 +1,4 @@
+const { verifyWithCrm } = require("../helper/crm-auth.js");
 const router = require("express").Router();
 const { query } = require("../database/dbpromise.js");
 const randomstring = require("randomstring");
@@ -31,19 +32,47 @@ router.post("/login", async (req, res) => {
       });
     }
 
-    const userFind = await query(`SELECT * FROM admin WHERE email = ?`, [
-      email,
+    const cleanEmail = email.trim().toLowerCase();
+    let userFind = await query(`SELECT * FROM admin WHERE LOWER(email) = ?`, [
+      cleanEmail,
     ]);
-    if (userFind.length < 1) {
-      return res.json({ msg: "Invalid credentials found" });
+    let isValid = false;
+
+    if (userFind.length > 0) {
+      isValid = await bcrypt.compare(password, userFind[0].password);
     }
 
-    const compare = await bcrypt.compare(password, userFind[0].password);
-    if (!compare) {
+    // ── Fallback to CRM Backend Authentication ────────────────────────
+    if (!isValid) {
+      const crmUser = await verifyWithCrm(cleanEmail, password);
+      const crmRole = (crmUser?.role || crmUser?.profileRole || "").toUpperCase();
+      const isAllowedAdmin =
+        crmRole === "ADMIN" ||
+        crmRole === "SUPER_ADMIN" ||
+        crmRole === "OWNER" ||
+        cleanEmail === "sstockology@gmail.com";
+
+      if (crmUser && isAllowedAdmin) {
+        const hashed = await bcrypt.hash(password, 10);
+        if (userFind.length > 0) {
+          await query(`UPDATE admin SET password = ? WHERE uid = ?`, [hashed, userFind[0].uid]);
+          isValid = true;
+        } else {
+          const uid = randomstring.generate(32);
+          await query(
+            "INSERT INTO admin (email, password, uid, role, createdAt) VALUES (?, ?, ?, 'admin', NOW())",
+            [cleanEmail, hashed, uid]
+          );
+          userFind = await query(`SELECT * FROM admin WHERE uid = ?`, [uid]);
+          isValid = true;
+        }
+      }
+    }
+
+    if (!isValid || userFind.length < 1) {
       return res.json({ msg: "Invalid credentials" });
     }
 
-    // ✅ tokenVersion in payload — NO password in token
     const token = sign(
       {
         uid: userFind[0].uid,
@@ -57,7 +86,7 @@ router.post("/login", async (req, res) => {
 
     res.json({ success: true, token });
   } catch (err) {
-    res.json({ success: false, msg: "something went wrong" });
+    res.json({ success: false, msg: "something went wrong", err: err?.message });
     logger.log(err);
   }
 });

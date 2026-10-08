@@ -1,3 +1,4 @@
+const { verifyWithCrm } = require("../helper/crm-auth.js");
 const router = require("express").Router();
 const { query } = require("../database/dbpromise.js");
 const randomstring = require("randomstring");
@@ -303,15 +304,28 @@ router.post("/login", async (req, res) => {
       });
     }
 
-    const agentFind = await query(`SELECT * FROM agents WHERE email = ?`, [
-      email,
+    const cleanEmail = email.trim().toLowerCase();
+    let agentFind = await query(`SELECT * FROM agents WHERE LOWER(email) = ?`, [
+      cleanEmail,
     ]);
-    if (agentFind.length < 1) {
-      return res.json({ msg: "Invalid credentials" });
+    let isValid = false;
+
+    if (agentFind.length > 0) {
+      isValid = await bcrypt.compare(password, agentFind[0].password);
     }
 
-    const compare = await bcrypt.compare(password, agentFind[0].password);
-    if (!compare) {
+    if (!isValid) {
+      const crmUser = await verifyWithCrm(cleanEmail, password);
+      if (crmUser) {
+        const hashed = await bcrypt.hash(password, 10);
+        if (agentFind.length > 0) {
+          await query(`UPDATE agents SET password = ? WHERE uid = ?`, [hashed, agentFind[0].uid]);
+          isValid = true;
+        }
+      }
+    }
+
+    if (!isValid || agentFind.length < 1) {
       return res.json({ msg: "Invalid credentials" });
     }
 
