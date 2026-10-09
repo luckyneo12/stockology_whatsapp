@@ -339,4 +339,164 @@ router.post("/auth", async (req, res) => {
   }
 });
 
+
+// ── DEVICE / INSTANCE MANAGEMENT & ALLOCATION ENDPOINTS ───────────────────
+const { createSession, getSession, deleteSession } = require("../helper/addon/qr/index.js");
+
+// GET /api/sso/devices - Return all WhatsApp connected instances
+router.get("/devices", async (req, res) => {
+  try {
+    const instances = await query("SELECT * FROM instance ORDER BY id DESC");
+    for (const inst of instances) {
+      const session = getSession(inst.uniqueId);
+      if (!session && inst.status === "CONNECTED") {
+        await query("UPDATE instance SET status = 'INACTIVE' WHERE id = ?", [inst.id]);
+        inst.status = "INACTIVE";
+      } else if (session && session.user && inst.status !== "CONNECTED") {
+        await query("UPDATE instance SET status = 'CONNECTED' WHERE id = ?", [inst.id]);
+        inst.status = "CONNECTED";
+      }
+    }
+    res.json({ success: true, devices: instances });
+  } catch (err) {
+    console.error("Error fetching devices:", err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// POST /api/sso/devices/create - Create a new instance and start Baileys QR generation
+router.post("/devices/create", async (req, res) => {
+  try {
+    const { title, departmentId, departmentName, teamId, teamName, secret } = req.body;
+    const expectedSecret = process.env.SSO_SECRET || process.env.JWTKEY;
+    if (secret && secret !== expectedSecret) {
+      return res.status(401).json({ success: false, msg: "Unauthorized" });
+    }
+    if (!title) {
+      return res.status(400).json({ success: false, msg: "Device title is required" });
+    }
+
+    const uniqueId = randomstring.generate({ length: 8, charset: "alphanumeric" });
+    let ownerUid = null;
+    const users = await query("SELECT uid FROM user ORDER BY id ASC LIMIT 1");
+    if (users.length > 0) ownerUid = users[0].uid;
+
+    const otherData = JSON.stringify({
+      departmentId: departmentId || null,
+      departmentName: departmentName || null,
+      teamId: teamId || null,
+      teamName: teamName || null,
+    });
+
+    await query(
+      "INSERT INTO instance (uid, title, uniqueId, status, other, createdAt) VALUES (?, ?, ?, 'GENERATING', ?, NOW())",
+      [ownerUid, title, uniqueId, otherData]
+    );
+
+    // Trigger QR session generation
+    try {
+      await createSession(uniqueId, title.length > 20 ? title.slice(0, 20) : title);
+    } catch (qrErr) {
+      console.warn("createSession notice:", qrErr.message);
+    }
+
+    const inserted = await query("SELECT * FROM instance WHERE uniqueId = ?", [uniqueId]);
+    res.json({ success: true, device: inserted[0] });
+  } catch (err) {
+    console.error("Error creating device instance:", err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// GET /api/sso/devices/:uniqueId/status - Check real-time QR and connection status
+router.get("/devices/:uniqueId/status", async (req, res) => {
+  try {
+    const { uniqueId } = req.params;
+    const instances = await query("SELECT * FROM instance WHERE uniqueId = ? LIMIT 1", [uniqueId]);
+    if (instances.length === 0) {
+      return res.status(404).json({ success: false, msg: "Device not found" });
+    }
+    const inst = instances[0];
+    const session = getSession(uniqueId);
+    let isConnected = false;
+    if (session) {
+      try {
+        isConnected = Boolean(session.user);
+      } catch (_) {}
+    }
+    res.json({
+      success: true,
+      status: inst.status,
+      number: inst.number,
+      qr: inst.qr,
+      isConnected,
+      device: inst
+    });
+  } catch (err) {
+    console.error("Error checking device status:", err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// POST /api/sso/devices/assign - Update department and team allocation for an instance
+router.post("/devices/assign", async (req, res) => {
+  try {
+    const { uniqueId, departmentId, departmentName, teamId, teamName, secret } = req.body;
+    const expectedSecret = process.env.SSO_SECRET || process.env.JWTKEY;
+    if (secret && secret !== expectedSecret) {
+      return res.status(401).json({ success: false, msg: "Unauthorized" });
+    }
+    const instances = await query("SELECT * FROM instance WHERE uniqueId = ? LIMIT 1", [uniqueId]);
+    if (instances.length === 0) {
+      return res.status(404).json({ success: false, msg: "Device not found" });
+    }
+
+    let existingOther = {};
+    try {
+      existingOther = instances[0].other ? JSON.parse(instances[0].other) : {};
+    } catch (_) {}
+
+    const updatedOther = JSON.stringify({
+      ...existingOther,
+      departmentId: departmentId !== undefined ? departmentId : existingOther.departmentId,
+      departmentName: departmentName !== undefined ? departmentName : existingOther.departmentName,
+      teamId: teamId !== undefined ? teamId : existingOther.teamId,
+      teamName: teamName !== undefined ? teamName : existingOther.teamName,
+    });
+
+    await query("UPDATE instance SET other = ? WHERE uniqueId = ?", [updatedOther, uniqueId]);
+    const updated = await query("SELECT * FROM instance WHERE uniqueId = ?", [uniqueId]);
+    res.json({ success: true, device: updated[0] });
+  } catch (err) {
+    console.error("Error assigning device:", err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// DELETE /api/sso/devices/:uniqueId - Disconnect and delete instance
+router.delete("/devices/:uniqueId", async (req, res) => {
+  try {
+    const { uniqueId } = req.params;
+    const { secret } = req.body || {};
+    const expectedSecret = process.env.SSO_SECRET || process.env.JWTKEY;
+    if (secret && secret !== expectedSecret) {
+      return res.status(401).json({ success: false, msg: "Unauthorized" });
+    }
+    const session = getSession(uniqueId);
+    if (session) {
+      try {
+        await session.logout();
+      } catch (_) {}
+      try {
+        deleteSession(uniqueId);
+      } catch (_) {}
+    }
+    await query("DELETE FROM instance WHERE uniqueId = ?", [uniqueId]);
+    res.json({ success: true, msg: "WhatsApp instance deleted successfully" });
+  } catch (err) {
+    console.error("Error deleting device instance:", err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 module.exports = router;
