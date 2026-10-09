@@ -367,7 +367,7 @@ router.get("/devices", async (req, res) => {
 // POST /api/sso/devices/create - Create a new instance and start Baileys QR generation
 router.post("/devices/create", async (req, res) => {
   try {
-    const { title, departmentId, departmentName, teamId, teamName, secret } = req.body;
+    const { title, departmentId, departmentName, departmentHead, teamId, teamName, teamLeader, assignedUserId, assignedUserName, secret } = req.body;
     const expectedSecret = process.env.SSO_SECRET || process.env.JWTKEY;
     if (secret && secret !== expectedSecret) {
       return res.status(401).json({ success: false, msg: "Unauthorized" });
@@ -384,8 +384,12 @@ router.post("/devices/create", async (req, res) => {
     const otherData = JSON.stringify({
       departmentId: departmentId || null,
       departmentName: departmentName || null,
+      departmentHead: departmentHead || null,
       teamId: teamId || null,
       teamName: teamName || null,
+      teamLeader: teamLeader || null,
+      assignedUserId: assignedUserId || null,
+      assignedUserName: assignedUserName || null,
     });
 
     await query(
@@ -441,7 +445,7 @@ router.get("/devices/:uniqueId/status", async (req, res) => {
 // POST /api/sso/devices/assign - Update department and team allocation for an instance
 router.post("/devices/assign", async (req, res) => {
   try {
-    const { uniqueId, departmentId, departmentName, teamId, teamName, secret } = req.body;
+    const { uniqueId, departmentId, departmentName, departmentHead, teamId, teamName, teamLeader, assignedUserId, assignedUserName, secret } = req.body;
     const expectedSecret = process.env.SSO_SECRET || process.env.JWTKEY;
     if (secret && secret !== expectedSecret) {
       return res.status(401).json({ success: false, msg: "Unauthorized" });
@@ -460,8 +464,12 @@ router.post("/devices/assign", async (req, res) => {
       ...existingOther,
       departmentId: departmentId !== undefined ? departmentId : existingOther.departmentId,
       departmentName: departmentName !== undefined ? departmentName : existingOther.departmentName,
+      departmentHead: departmentHead !== undefined ? departmentHead : existingOther.departmentHead,
       teamId: teamId !== undefined ? teamId : existingOther.teamId,
       teamName: teamName !== undefined ? teamName : existingOther.teamName,
+      teamLeader: teamLeader !== undefined ? teamLeader : existingOther.teamLeader,
+      assignedUserId: assignedUserId !== undefined ? assignedUserId : existingOther.assignedUserId,
+      assignedUserName: assignedUserName !== undefined ? assignedUserName : existingOther.assignedUserName,
     });
 
     await query("UPDATE instance SET other = ? WHERE uniqueId = ?", [updatedOther, uniqueId]);
