@@ -1,3 +1,21 @@
+function parseAgentComments(raw) {
+  if (!raw) return {};
+  if (typeof raw === "object") return raw;
+  try {
+    if (typeof raw === "string") {
+      if (raw.includes("-- {")) {
+        return JSON.parse(raw.substring(raw.indexOf("-- {") + 3));
+      }
+      const braceIdx = raw.indexOf("{");
+      if (braceIdx !== -1) {
+        return JSON.parse(raw.substring(braceIdx));
+      }
+      return JSON.parse(raw);
+    }
+  } catch (_) {}
+  return {};
+}
+
 const router = require("express").Router();
 const { query } = require("../database/dbpromise.js");
 const validateUserOrAgent = require("../middlewares/userOrAgent.js");
@@ -16,19 +34,12 @@ async function resolveScopeContext(req) {
   const agentUid = req.decode.uid;
   const ownerUid = isAgent ? req.decode.owner_uid : req.decode.uid;
 
-  let agentMeta = null;
-  if (isAgent && req.decode.userData?.comments) {
-    try {
-      agentMeta = typeof req.decode.userData.comments === "string"
-        ? JSON.parse(req.decode.userData.comments)
-        : req.decode.userData.comments;
-      if (agentMeta) {
-        if (!dataScope) dataScope = agentMeta.dataScope;
-        if (!crmUserId) crmUserId = agentMeta.crmUserId;
-        if (!departmentId) departmentId = agentMeta.departmentId;
-        if (!teamId) teamId = agentMeta.teamId;
-      }
-    } catch (_) {}
+  let agentMeta = isAgent ? parseAgentComments(req.decode.userData?.comments) : null;
+  if (agentMeta) {
+    if (!dataScope) dataScope = agentMeta.dataScope;
+    if (!crmUserId) crmUserId = agentMeta.crmUserId;
+    if (!departmentId) departmentId = agentMeta.departmentId;
+    if (!teamId) teamId = agentMeta.teamId;
   }
 
   // Master admin account
@@ -272,105 +283,117 @@ router.post("/get_board", validateUserOrAgent, checkPlan, async (req, res) => {
       }
     } else if (scope.dataScope === "TEAM") {
       const teamConds = [];
-      if (scope.teamId) {
-        teamConds.push(`assigned_agent LIKE ?`);
-        params.push(`%"teamId":"${scope.teamId}"%`);
+      if (scope.isLeader) {
+        if (scope.teamId) {
+          teamConds.push(`assigned_agent LIKE ?`);
+          params.push(`%"teamId":"${scope.teamId}"%`);
 
-        // Include chats from all devices assigned to this team
-        try {
-          const teamInstances = await query(
-            `SELECT uniqueId, number FROM instance WHERE uid = ? AND other LIKE ?`,
-            [scope.ownerUid, `%"teamId":"${scope.teamId}"%`]
-          );
-          if (Array.isArray(teamInstances)) {
-            for (const inst of teamInstances) {
-              if (inst.number) {
-                teamConds.push(`origin_instance_id LIKE ?`);
-                params.push(`%${inst.number}%`);
-              }
-              if (inst.uniqueId) {
-                teamConds.push(`origin_instance_id LIKE ?`);
-                params.push(`%${inst.uniqueId}%`);
+          // Include unassigned chats from all devices assigned to this team
+          try {
+            const teamInstances = await query(
+              `SELECT uniqueId, number FROM instance WHERE uid = ? AND other LIKE ?`,
+              [scope.ownerUid, `%"teamId":"${scope.teamId}"%`]
+            );
+            if (Array.isArray(teamInstances)) {
+              for (const inst of teamInstances) {
+                if (inst.number) {
+                  teamConds.push(`origin_instance_id LIKE ? AND (assigned_agent IS NULL OR assigned_agent = 'null' OR assigned_agent = '[]' OR assigned_agent = '' OR assigned_agent LIKE '%"unassigned":true%')`);
+                  params.push(`%${inst.number}%`);
+                }
+                if (inst.uniqueId) {
+                  teamConds.push(`origin_instance_id LIKE ? AND (assigned_agent IS NULL OR assigned_agent = 'null' OR assigned_agent = '[]' OR assigned_agent = '' OR assigned_agent LIKE '%"unassigned":true%')`);
+                  params.push(`%${inst.uniqueId}%`);
+                }
               }
             }
-          }
-        } catch (_) {}
-      }
-      if (scope.crmUserId) {
-        teamConds.push(`assigned_agent LIKE ?`);
-        params.push(`%"crmUserId":"${scope.crmUserId}"%`);
-      }
-      if (scope.agentId) {
-        teamConds.push(`assigned_agent LIKE ? OR assigned_agent LIKE ?`);
-        params.push(`%"id":${scope.agentId}%`, `%"id":"${scope.agentId}"%`);
-      }
-      if (Array.isArray(scope.scopedUserIds) && scope.scopedUserIds.length > 0) {
-        for (const sid of scope.scopedUserIds) {
+          } catch (_) {}
+        }
+        if (scope.crmUserId) {
           teamConds.push(`assigned_agent LIKE ?`);
-          params.push(`%"crmUserId":"${sid}"%`);
+          params.push(`%"crmUserId":"${scope.crmUserId}"%`);
+        }
+        if (Array.isArray(scope.scopedUserIds) && scope.scopedUserIds.length > 0) {
+          for (const sid of scope.scopedUserIds) {
+            teamConds.push(`assigned_agent LIKE ?`);
+            params.push(`%"crmUserId":"${sid}"%`);
+          }
+        }
+      } else {
+        // Non-leader: strictly own assigned cards only!
+        if (scope.crmUserId) {
+          teamConds.push(`assigned_agent LIKE ?`);
+          params.push(`%"crmUserId":"${scope.crmUserId}"%`);
+        }
+        if (scope.agentUid) {
+          teamConds.push(`assigned_agent LIKE ?`);
+          params.push(`%"uid":"${scope.agentUid}"%`);
+        }
+        if (scope.agentId) {
+          teamConds.push(`assigned_agent LIKE ? OR assigned_agent LIKE ?`);
+          params.push(`%"id":${scope.agentId}%`, `%"id":"${scope.agentId}"%`);
         }
       }
-      if (scope.isLeader) {
-        teamConds.push(
-          `assigned_agent IS NULL OR assigned_agent = 'null' OR assigned_agent = '[]' OR assigned_agent = ''`
-        );
-      }
+
       if (teamConds.length > 0) {
         searchCondition += ` AND (${teamConds.join(" OR ")})`;
       } else {
-        searchCondition += ` AND (assigned_agent LIKE ? OR assigned_agent LIKE ?)`;
-        params.push(`%"crmUserId":"${scope.crmUserId}"%`, `%"id":${scope.agentId}%`);
+        searchCondition += ` AND 1 = 0`;
       }
     } else if (scope.dataScope === "DEPARTMENT") {
       const deptConds = [];
-      if (scope.departmentId) {
-        deptConds.push(`assigned_agent LIKE ?`);
-        params.push(`%"departmentId":"${scope.departmentId}"%`);
+      if (scope.isDeptHead || scope.isLeader) {
+        if (scope.departmentId) {
+          deptConds.push(`assigned_agent LIKE ?`);
+          params.push(`%"departmentId":"${scope.departmentId}"%`);
 
-        // Include chats from all devices assigned to this department
-        try {
-          const deptInstances = await query(
-            `SELECT uniqueId, number FROM instance WHERE uid = ? AND other LIKE ?`,
-            [scope.ownerUid, `%"departmentId":"${scope.departmentId}"%`]
-          );
-          if (Array.isArray(deptInstances)) {
-            for (const inst of deptInstances) {
-              if (inst.number) {
-                deptConds.push(`origin_instance_id LIKE ?`);
-                params.push(`%${inst.number}%`);
-              }
-              if (inst.uniqueId) {
-                deptConds.push(`origin_instance_id LIKE ?`);
-                params.push(`%${inst.uniqueId}%`);
+          try {
+            const deptInstances = await query(
+              `SELECT uniqueId, number FROM instance WHERE uid = ? AND other LIKE ?`,
+              [scope.ownerUid, `%"departmentId":"${scope.departmentId}"%`]
+            );
+            if (Array.isArray(deptInstances)) {
+              for (const inst of deptInstances) {
+                if (inst.number) {
+                  deptConds.push(`origin_instance_id LIKE ? AND (assigned_agent IS NULL OR assigned_agent = 'null' OR assigned_agent = '[]' OR assigned_agent = '' OR assigned_agent LIKE '%"unassigned":true%')`);
+                  params.push(`%${inst.number}%`);
+                }
+                if (inst.uniqueId) {
+                  deptConds.push(`origin_instance_id LIKE ? AND (assigned_agent IS NULL OR assigned_agent = 'null' OR assigned_agent = '[]' OR assigned_agent = '' OR assigned_agent LIKE '%"unassigned":true%')`);
+                  params.push(`%${inst.uniqueId}%`);
+                }
               }
             }
-          }
-        } catch (_) {}
-      }
-      if (scope.crmUserId) {
-        deptConds.push(`assigned_agent LIKE ?`);
-        params.push(`%"crmUserId":"${scope.crmUserId}"%`);
-      }
-      if (scope.agentId) {
-        deptConds.push(`assigned_agent LIKE ? OR assigned_agent LIKE ?`);
-        params.push(`%"id":${scope.agentId}%`, `%"id":"${scope.agentId}"%`);
-      }
-      if (Array.isArray(scope.scopedUserIds) && scope.scopedUserIds.length > 0) {
-        for (const sid of scope.scopedUserIds) {
+          } catch (_) {}
+        }
+        if (scope.crmUserId) {
           deptConds.push(`assigned_agent LIKE ?`);
-          params.push(`%"crmUserId":"${sid}"%`);
+          params.push(`%"crmUserId":"${scope.crmUserId}"%`);
+        }
+        if (Array.isArray(scope.scopedUserIds) && scope.scopedUserIds.length > 0) {
+          for (const sid of scope.scopedUserIds) {
+            deptConds.push(`assigned_agent LIKE ?`);
+            params.push(`%"crmUserId":"${sid}"%`);
+          }
+        }
+      } else {
+        if (scope.crmUserId) {
+          deptConds.push(`assigned_agent LIKE ?`);
+          params.push(`%"crmUserId":"${scope.crmUserId}"%`);
+        }
+        if (scope.agentUid) {
+          deptConds.push(`assigned_agent LIKE ?`);
+          params.push(`%"uid":"${scope.agentUid}"%`);
+        }
+        if (scope.agentId) {
+          deptConds.push(`assigned_agent LIKE ? OR assigned_agent LIKE ?`);
+          params.push(`%"id":${scope.agentId}%`, `%"id":"${scope.agentId}"%`);
         }
       }
-      if (scope.isDeptHead || scope.isLeader) {
-        deptConds.push(
-          `assigned_agent IS NULL OR assigned_agent = 'null' OR assigned_agent = '[]' OR assigned_agent = ''`
-        );
-      }
+
       if (deptConds.length > 0) {
         searchCondition += ` AND (${deptConds.join(" OR ")})`;
       } else {
-        searchCondition += ` AND (assigned_agent LIKE ? OR assigned_agent LIKE ?)`;
-        params.push(`%"crmUserId":"${scope.crmUserId}"%`, `%"id":${scope.agentId}%`);
+        searchCondition += ` AND 1 = 0`;
       }
     }
 
@@ -435,6 +458,46 @@ router.post("/get_board", validateUserOrAgent, checkPlan, async (req, res) => {
       } catch {}
       return chat;
     });
+
+    // Enrich parsedChats with CRM lead names and normalize phone numbers
+    try {
+      const crmDb = process.env.CRM_DB_NAME || "stockology_db_backup";
+      const mobileList = parsedChats
+        .map((c) => {
+          const d = String(c.sender_mobile || "").replace(/\D/g, "");
+          return d.length >= 10 ? d.slice(-10) : d;
+        })
+        .filter((d) => d && d.length >= 7);
+
+      if (mobileList.length > 0) {
+        const placeholders = mobileList.map(() => "?").join(",");
+        const crmLeads = await query(
+          `SELECT name, phone FROM ${crmDb}.crm_leads WHERE RIGHT(phone, 10) IN (${placeholders})`,
+          mobileList
+        );
+
+        if (Array.isArray(crmLeads)) {
+          const leadMap = new Map();
+          for (const l of crmLeads) {
+            const digits = String(l.phone || "").replace(/\D/g, "").slice(-10);
+            if (digits) leadMap.set(digits, l.name);
+          }
+
+          for (const chat of parsedChats) {
+            const digits = String(chat.sender_mobile || "").replace(/\D/g, "");
+            const last10 = digits.slice(-10);
+            if (digits.length === 10) {
+              chat.sender_mobile = "91" + digits;
+            }
+            if (leadMap.has(last10)) {
+              chat.sender_name = leadMap.get(last10);
+            }
+          }
+        }
+      }
+    } catch (crmErr) {
+      console.warn("CRM lead enrichment error in kaban /get_board:", crmErr.message);
+    }
 
     const grouped = {};
     labels.forEach((l) => (grouped[l.id] = []));

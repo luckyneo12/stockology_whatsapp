@@ -1,3 +1,21 @@
+function parseAgentComments(raw) {
+  if (!raw) return {};
+  if (typeof raw === "object") return raw;
+  try {
+    if (typeof raw === "string") {
+      if (raw.includes("-- {")) {
+        return JSON.parse(raw.substring(raw.indexOf("-- {") + 3));
+      }
+      const braceIdx = raw.indexOf("{");
+      if (braceIdx !== -1) {
+        return JSON.parse(raw.substring(braceIdx));
+      }
+      return JSON.parse(raw);
+    }
+  } catch (_) {}
+  return {};
+}
+
 const { query } = require("../../database/dbpromise");
 const {
   mergeArraysWithPhonebook,
@@ -79,12 +97,7 @@ function processSocketEvent({
           conditions.push(`uid = ?`);
           queryParams.push(ownerUid);
 
-          let agentMeta = null;
-          try {
-            agentMeta = typeof socket?.userData?.comments === "string"
-              ? JSON.parse(socket.userData.comments)
-              : socket?.userData?.comments;
-          } catch (_) {}
+          let agentMeta = parseAgentComments(socket?.userData?.comments);
 
           let effectiveScope = socket?.decodedToken?.dataScope || agentMeta?.dataScope;
           const crmUserId = socket?.decodedToken?.crmUserId || agentMeta?.crmUserId;
@@ -147,112 +160,124 @@ function processSocketEvent({
               conditions.push(`1 = 0`);
             }
           } else if (effectiveScope === "TEAM") {
-            // TEAM: chats belonging to team members, tagged teamId, or devices assigned to this team
+            // TEAM:
+            // - Team Leader / Manager: sees all chats assigned to this team + unassigned chats on team devices
+            // - Regular team member: ONLY sees chats assigned to them (crmUserId / agentUid / agentId)
             const teamConds = [];
-            if (teamId) {
-              teamConds.push(`assigned_agent LIKE ?`);
-              queryParams.push(`%"teamId":"${teamId}"%`);
+            if (isLeader) {
+              if (teamId) {
+                teamConds.push(`assigned_agent LIKE ?`);
+                queryParams.push(`%"teamId":"${teamId}"%`);
 
-              // Include all chats from devices assigned to this team
-              try {
-                const teamInstances = await query(
-                  `SELECT uniqueId, number FROM instance WHERE uid = ? AND other LIKE ?`,
-                  [ownerUid, `%"teamId":"${teamId}"%`]
-                );
-                if (Array.isArray(teamInstances)) {
-                  for (const inst of teamInstances) {
-                    if (inst.number) {
-                      teamConds.push(`origin_instance_id LIKE ?`);
-                      queryParams.push(`%${inst.number}%`);
-                    }
-                    if (inst.uniqueId) {
-                      teamConds.push(`origin_instance_id LIKE ?`);
-                      queryParams.push(`%${inst.uniqueId}%`);
+                // Unassigned chats from team devices visible to leader
+                try {
+                  const teamInstances = await query(
+                    `SELECT uniqueId, number FROM instance WHERE uid = ? AND other LIKE ?`,
+                    [ownerUid, `%"teamId":"${teamId}"%`]
+                  );
+                  if (Array.isArray(teamInstances)) {
+                    for (const inst of teamInstances) {
+                      if (inst.number) {
+                        teamConds.push(`origin_instance_id LIKE ? AND (assigned_agent IS NULL OR assigned_agent = 'null' OR assigned_agent = '[]' OR assigned_agent = '' OR assigned_agent LIKE '%"unassigned":true%')`);
+                        queryParams.push(`%${inst.number}%`);
+                      }
+                      if (inst.uniqueId) {
+                        teamConds.push(`origin_instance_id LIKE ? AND (assigned_agent IS NULL OR assigned_agent = 'null' OR assigned_agent = '[]' OR assigned_agent = '' OR assigned_agent LIKE '%"unassigned":true%')`);
+                        queryParams.push(`%${inst.uniqueId}%`);
+                      }
                     }
                   }
-                }
-              } catch (_) {}
-            }
-            if (crmUserId) {
-              teamConds.push(`assigned_agent LIKE ?`);
-              queryParams.push(`%"crmUserId":"${crmUserId}"%`);
-            }
-            if (agentId) {
-              teamConds.push(`assigned_agent LIKE ?`);
-              queryParams.push(`%"id":${agentId}%`);
-              teamConds.push(`assigned_agent LIKE ?`);
-              queryParams.push(`%"id":"${agentId}"%`);
-            }
-            if (Array.isArray(scopedUserIds) && scopedUserIds.length > 0) {
-              for (const sid of scopedUserIds) {
+                } catch (_) {}
+              }
+              if (crmUserId) {
                 teamConds.push(`assigned_agent LIKE ?`);
-                queryParams.push(`%"crmUserId":"${sid}"%`);
+                queryParams.push(`%"crmUserId":"${crmUserId}"%`);
+              }
+              if (Array.isArray(scopedUserIds) && scopedUserIds.length > 0) {
+                for (const sid of scopedUserIds) {
+                  teamConds.push(`assigned_agent LIKE ?`);
+                  queryParams.push(`%"crmUserId":"${sid}"%`);
+                }
+              }
+            } else {
+              // Regular team executive: strictly own assigned chats only!
+              if (crmUserId) {
+                teamConds.push(`assigned_agent LIKE ?`);
+                queryParams.push(`%"crmUserId":"${crmUserId}"%`);
+              }
+              if (agentUid) {
+                teamConds.push(`assigned_agent LIKE ?`);
+                queryParams.push(`%"uid":"${agentUid}"%`);
+              }
+              if (agentId) {
+                teamConds.push(`assigned_agent LIKE ? OR assigned_agent LIKE ?`);
+                queryParams.push(`%"id":${agentId}%`, `%"id":"${agentId}"%`);
               }
             }
-            if (isLeader) {
-              teamConds.push(
-                `assigned_agent IS NULL OR assigned_agent = 'null' OR assigned_agent = '[]' OR assigned_agent = ''`
-              );
-            }
+
             if (teamConds.length > 0) {
               conditions.push(`(${teamConds.join(" OR ")})`);
             } else {
-              conditions.push(`(assigned_agent LIKE ? OR assigned_agent LIKE ?)`);
-              queryParams.push(`%"crmUserId":"${crmUserId}"%`, `%"id":${agentId}%`);
+              conditions.push(`1 = 0`);
             }
           } else if (effectiveScope === "DEPARTMENT") {
-            // DEPARTMENT: chats belonging to department members, departmentId, or devices assigned to this department
+            // DEPARTMENT:
+            // - Dept Head: sees all department chats + unassigned on dept devices
+            // - Regular member: strictly own assigned chats
             const deptConds = [];
-            if (departmentId) {
-              deptConds.push(`assigned_agent LIKE ?`);
-              queryParams.push(`%"departmentId":"${departmentId}"%`);
+            if (isDeptHead || isLeader) {
+              if (departmentId) {
+                deptConds.push(`assigned_agent LIKE ?`);
+                queryParams.push(`%"departmentId":"${departmentId}"%`);
 
-              // Include all chats from devices assigned to this department
-              try {
-                const deptInstances = await query(
-                  `SELECT uniqueId, number FROM instance WHERE uid = ? AND other LIKE ?`,
-                  [ownerUid, `%"departmentId":"${departmentId}"%`]
-                );
-                if (Array.isArray(deptInstances)) {
-                  for (const inst of deptInstances) {
-                    if (inst.number) {
-                      deptConds.push(`origin_instance_id LIKE ?`);
-                      queryParams.push(`%${inst.number}%`);
-                    }
-                    if (inst.uniqueId) {
-                      deptConds.push(`origin_instance_id LIKE ?`);
-                      queryParams.push(`%${inst.uniqueId}%`);
+                try {
+                  const deptInstances = await query(
+                    `SELECT uniqueId, number FROM instance WHERE uid = ? AND other LIKE ?`,
+                    [ownerUid, `%"departmentId":"${departmentId}"%`]
+                  );
+                  if (Array.isArray(deptInstances)) {
+                    for (const inst of deptInstances) {
+                      if (inst.number) {
+                        deptConds.push(`origin_instance_id LIKE ? AND (assigned_agent IS NULL OR assigned_agent = 'null' OR assigned_agent = '[]' OR assigned_agent = '' OR assigned_agent LIKE '%"unassigned":true%')`);
+                        queryParams.push(`%${inst.number}%`);
+                      }
+                      if (inst.uniqueId) {
+                        deptConds.push(`origin_instance_id LIKE ? AND (assigned_agent IS NULL OR assigned_agent = 'null' OR assigned_agent = '[]' OR assigned_agent = '' OR assigned_agent LIKE '%"unassigned":true%')`);
+                        queryParams.push(`%${inst.uniqueId}%`);
+                      }
                     }
                   }
-                }
-              } catch (_) {}
-            }
-            if (crmUserId) {
-              deptConds.push(`assigned_agent LIKE ?`);
-              queryParams.push(`%"crmUserId":"${crmUserId}"%`);
-            }
-            if (agentId) {
-              deptConds.push(`assigned_agent LIKE ?`);
-              queryParams.push(`%"id":${agentId}%`);
-              deptConds.push(`assigned_agent LIKE ?`);
-              queryParams.push(`%"id":"${agentId}"%`);
-            }
-            if (Array.isArray(scopedUserIds) && scopedUserIds.length > 0) {
-              for (const sid of scopedUserIds) {
+                } catch (_) {}
+              }
+              if (crmUserId) {
                 deptConds.push(`assigned_agent LIKE ?`);
-                queryParams.push(`%"crmUserId":"${sid}"%`);
+                queryParams.push(`%"crmUserId":"${crmUserId}"%`);
+              }
+              if (Array.isArray(scopedUserIds) && scopedUserIds.length > 0) {
+                for (const sid of scopedUserIds) {
+                  deptConds.push(`assigned_agent LIKE ?`);
+                  queryParams.push(`%"crmUserId":"${sid}"%`);
+                }
+              }
+            } else {
+              if (crmUserId) {
+                deptConds.push(`assigned_agent LIKE ?`);
+                queryParams.push(`%"crmUserId":"${crmUserId}"%`);
+              }
+              if (agentUid) {
+                deptConds.push(`assigned_agent LIKE ?`);
+                queryParams.push(`%"uid":"${agentUid}"%`);
+              }
+              if (agentId) {
+                deptConds.push(`assigned_agent LIKE ? OR assigned_agent LIKE ?`);
+                queryParams.push(`%"id":${agentId}%`, `%"id":"${agentId}"%`);
               }
             }
-            if (isDeptHead || isLeader) {
-              deptConds.push(
-                `assigned_agent IS NULL OR assigned_agent = 'null' OR assigned_agent = '[]' OR assigned_agent = ''`
-              );
-            }
+
             if (deptConds.length > 0) {
               conditions.push(`(${deptConds.join(" OR ")})`);
             } else {
-              conditions.push(`(assigned_agent LIKE ? OR assigned_agent LIKE ?)`);
-              queryParams.push(`%"crmUserId":"${crmUserId}"%`, `%"id":${agentId}%`);
+              conditions.push(`1 = 0`);
             }
           }
           // COMPANY / ALL: Full access under ownerUid, no condition appended
@@ -346,6 +371,54 @@ function processSocketEvent({
           const contacts = await query(`SELECT * FROM contact WHERE uid = ?`, [
             isAgent ? socket?.userData?.owner_uid : uid,
           ]);
+
+          // Normalize mobile format and enrich from CRM Leads
+          try {
+            const crmDb = process.env.CRM_DB_NAME || "stockology_db_backup";
+            const mobileList = chats
+              .map((c) => {
+                const d = String(c.sender_mobile || "").replace(/\D/g, "");
+                return d.length >= 10 ? d.slice(-10) : d;
+              })
+              .filter((d) => d && d.length >= 7);
+
+            if (mobileList.length > 0) {
+              const placeholders = mobileList.map(() => "?").join(",");
+              const crmLeads = await query(
+                `SELECT name, phone FROM ${crmDb}.crm_leads WHERE RIGHT(phone, 10) IN (${placeholders})`,
+                mobileList
+              );
+
+              if (Array.isArray(crmLeads)) {
+                const leadMap = new Map();
+                for (const lead of crmLeads) {
+                  const d = String(lead.phone || "").replace(/\D/g, "").slice(-10);
+                  if (d) {
+                    leadMap.set(d, lead.name);
+                    contacts.push({ name: lead.name, mobile: "91" + d });
+                    contacts.push({ name: lead.name, mobile: d });
+                  }
+                }
+
+                for (const c of chats) {
+                  const d = String(c.sender_mobile || "").replace(/\D/g, "");
+                  const last10 = d.slice(-10);
+                  if (d.length === 10) {
+                    c.sender_mobile = "91" + d;
+                  }
+                  if (leadMap.has(last10)) {
+                    const realName = leadMap.get(last10);
+                    if (!c.sender_name || c.sender_name === "NA" || c.sender_name === c.sender_mobile || c.sender_name === d) {
+                      c.sender_name = realName;
+                    }
+                  }
+                }
+              }
+            }
+          } catch (enrichErr) {
+            console.warn("CRM Lead enrichment in get_chat_list:", enrichErr.message);
+          }
+
           const chatData = mergeArraysWithPhonebook(chats, contacts);
 
           const agentData = await query(
@@ -621,12 +694,36 @@ function processSocketEvent({
             ],
           );
 
+          let contactData = getContact || null;
+          if (!contactData && updatedChat?.sender_mobile) {
+            try {
+              const crmDb = process.env.CRM_DB_NAME || "stockology_db_backup";
+              const digits = String(updatedChat.sender_mobile).replace(/\D/g, "");
+              const last10 = digits.length >= 10 ? digits.slice(-10) : digits;
+              const [crmLead] = await query(
+                `SELECT name, phone FROM ${crmDb}.crm_leads WHERE phone LIKE ? ORDER BY updatedAt DESC LIMIT 1`,
+                ["%" + last10 + "%"]
+              );
+              if (crmLead?.name) {
+                contactData = { name: crmLead.name, mobile: updatedChat.sender_mobile };
+                if (!updatedChat.sender_name || updatedChat.sender_name === "NA" || updatedChat.sender_name === updatedChat.sender_mobile) {
+                  updatedChat.sender_name = crmLead.name;
+                }
+              }
+            } catch (_) {}
+          }
+
+          if (updatedChat?.sender_mobile) {
+            const d = String(updatedChat.sender_mobile).replace(/\D/g, "");
+            if (d.length === 10) updatedChat.sender_mobile = "91" + d;
+          }
+
           const phonebookData = await query(
             `SELECT * FROM phonebook WHERE uid = ?`,
             [isAgent ? socket?.userData?.owner_uid : uid],
           );
 
-          updatedChat = { ...updatedChat, contactData: getContact || null };
+          updatedChat = { ...updatedChat, contactData };
           updatedChat.chat_note = updatedChat?.chat_note
             ? JSON.parse(updatedChat?.chat_note)
             : [];

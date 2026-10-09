@@ -63,7 +63,7 @@ async function updateProfileMysql({
   }
 }
 
-// Resolve responsible agent or team head based on CRM Lead ownership and device allocation
+// Resolve responsible agent or device owner based on CRM Lead ownership and device allocation
 async function resolveResponsibleAgentForChat({ senderMobile, sessionId, uid }) {
   try {
     if (!senderMobile || senderMobile === "NA") return null;
@@ -75,7 +75,20 @@ async function resolveResponsibleAgentForChat({ senderMobile, sessionId, uid }) 
 
     const crmDb = process.env.CRM_DB_NAME || "stockology_db_backup";
 
-    // 2. Lookup CRM lead by phone number
+    // 2. Lookup device instance allocation
+    const instances = await query(
+      "SELECT id, uid, title, number, uniqueId, other FROM instance WHERE uniqueId = ? OR id = ? LIMIT 1",
+      [sessionId, sessionId]
+    );
+
+    let meta = {};
+    if (instances && instances.length > 0) {
+      try {
+        meta = typeof instances[0].other === "string" ? JSON.parse(instances[0].other) : instances[0].other || {};
+      } catch (_) {}
+    }
+
+    // 3. Lookup CRM lead by phone number
     const leads = await query(
       "SELECT id, name, phone, assignedTo, departmentId FROM " + crmDb + ".crm_leads WHERE phone LIKE ? ORDER BY updatedAt DESC LIMIT 1",
       ["%" + last10Digits + "%"]
@@ -83,131 +96,59 @@ async function resolveResponsibleAgentForChat({ senderMobile, sessionId, uid }) 
 
     const lead = leads && leads.length > 0 ? leads[0] : null;
 
-    // 3. Scenario A: Lead is assigned in CRM to a specific sales executive/member
+    // 4. Scenario A: Lead is assigned in CRM to a specific sales executive/member
     if (lead?.assignedTo) {
       const matchedAgents = await query(
         "SELECT id, uid, name, email, comments FROM agents WHERE comments LIKE ? LIMIT 1",
         ['%"crmUserId":"' + lead.assignedTo + '"%']
       );
 
-      if (matchedAgents && matchedAgents.length > 0) {
-        const ag = matchedAgents[0];
-        let agComments = {};
-        try {
-          agComments = typeof ag.comments === "string" ? JSON.parse(ag.comments) : ag.comments || {};
-        } catch (_) {}
-
-        return JSON.stringify([
-          {
-            id: ag.id,
-            uid: ag.uid,
-            name: ag.name,
-            email: ag.email,
-            crmUserId: lead.assignedTo,
-            leadId: lead.id,
-            teamId: agComments.teamId || null,
-            teamName: agComments.teamName || null,
-            departmentId: agComments.departmentId || null,
-            departmentName: agComments.departmentName || null,
-            dataScope: agComments.dataScope || "SELF",
-          },
-        ]);
-      }
-    }
-
-    // 4. Scenario B: Lead is not assigned to any specific member (or unknown number)
-    // Find instance allocation (team / department / leader)
-    const instances = await query(
-      "SELECT id, uid, uniqueId, other FROM instance WHERE uniqueId = ? OR id = ? LIMIT 1",
-      [sessionId, sessionId]
-    );
-
-    if (instances && instances.length > 0) {
-      let meta = {};
+      const ag = matchedAgents && matchedAgents.length > 0 ? matchedAgents[0] : null;
+      let agComments = {};
       try {
-        meta = typeof instances[0].other === "string" ? JSON.parse(instances[0].other) : instances[0].other || {};
+        agComments = typeof ag?.comments === "string" ? JSON.parse(ag.comments) : ag?.comments || {};
       } catch (_) {}
 
-      // If instance is directly assigned to a specific user
-      if (meta?.assignedUserId) {
-        const userAgents = await query(
-          "SELECT id, uid, name, email, comments FROM agents WHERE comments LIKE ? LIMIT 1",
-          ['%"crmUserId":"' + meta.assignedUserId + '"%']
-        );
-        if (userAgents && userAgents.length > 0) {
-          const ag = userAgents[0];
-          return JSON.stringify([
-            {
-              id: ag.id,
-              uid: ag.uid,
-              name: ag.name,
-              email: ag.email,
-              assignedDirect: true,
-            },
-          ]);
-        }
-      }
-
-      // If instance is allocated to a team, find Team Leader
-      if (meta?.teamId) {
-        const teamLeaders = await query(
-          "SELECT id, uid, name, email, comments FROM agents WHERE (comments LIKE ? AND comments LIKE ?) OR (comments LIKE ? AND comments LIKE ?) LIMIT 1",
-          [
-            '%"teamId":"' + meta.teamId + '"%',
-            '%"role":"MANAGER"%',
-            '%"teamId":"' + meta.teamId + '"%',
-            '%"role":"LEADER"%',
-          ]
-        );
-
-        if (teamLeaders && teamLeaders.length > 0) {
-          const leader = teamLeaders[0];
-          return JSON.stringify([
-            {
-              id: leader.id,
-              uid: leader.uid,
-              name: leader.name,
-              email: leader.email,
-              isTeamHead: true,
-              teamId: meta.teamId,
-              teamName: meta.teamName,
-              departmentId: meta.departmentId || null,
-              departmentName: meta.departmentName || null,
-              deviceTitle: instances[0]?.title || null,
-              deviceNumber: instances[0]?.number || null,
-            },
-          ]);
-        }
-
-        // Always attach team metadata so team members can view chats from their device
-        return JSON.stringify([
-          {
-            teamId: meta.teamId,
-            teamName: meta.teamName,
-            teamLeader: meta.teamLeader || null,
-            departmentId: meta.departmentId || null,
-            departmentName: meta.departmentName || null,
-            departmentHead: meta.departmentHead || null,
-            deviceTitle: instances[0]?.title || null,
-            deviceNumber: instances[0]?.number || null,
-          },
-        ]);
-      }
-
-      if (meta?.departmentId) {
-        return JSON.stringify([
-          {
-            departmentId: meta.departmentId,
-            departmentName: meta.departmentName,
-            departmentHead: meta.departmentHead || null,
-            deviceTitle: instances[0]?.title || null,
-            deviceNumber: instances[0]?.number || null,
-          },
-        ]);
-      }
+      // Assigned strictly to the responsible sales executive
+      return JSON.stringify([
+        {
+          id: ag?.id || null,
+          uid: ag?.uid || null,
+          name: ag?.name || lead.name,
+          email: ag?.email || null,
+          crmUserId: lead.assignedTo,
+          leadId: lead.id,
+          leadName: lead.name,
+          teamId: meta.teamId || agComments.teamId || null,
+          teamName: meta.teamName || agComments.teamName || null,
+          departmentId: meta.departmentId || agComments.departmentId || null,
+          departmentName: meta.departmentName || agComments.departmentName || null,
+          dataScope: "SELF",
+          deviceTitle: instances[0]?.title || null,
+          deviceNumber: instances[0]?.number || null,
+        },
+      ]);
     }
 
-    // Fallback: null so Account Owner / Department Head sees it
+    // 5. Scenario B: Lead NOT assigned to any team member (or unknown number)
+    // Only the person who assigned the device (Team Leader / Dept Head / Manager) can see it!
+    if (instances && instances.length > 0) {
+      return JSON.stringify([
+        {
+          unassigned: true,
+          teamId: meta.teamId || null,
+          teamName: meta.teamName || null,
+          teamLeader: meta.teamLeader || null,
+          departmentId: meta.departmentId || null,
+          departmentName: meta.departmentName || null,
+          departmentHead: meta.departmentHead || null,
+          deviceAssignedToUser: meta.assignedUserId || null,
+          deviceTitle: instances[0]?.title || null,
+          deviceNumber: instances[0]?.number || null,
+        },
+      ]);
+    }
+
     return null;
   } catch (err) {
     console.error("resolveResponsibleAgentForChat error:", err);
@@ -280,8 +221,35 @@ async function updateChatInMysql({
     }
 
     const last_message = JSON.stringify(actualMsg);
-    const sender_name = senderName || "NA";
-    const sender_mobile = senderMobile || "NA";
+    
+    // Normalize mobile to ensure country code 91 is included for 10-digit Indian numbers
+    let sender_mobile = senderMobile || "NA";
+    if (sender_mobile !== "NA") {
+      const digits = String(sender_mobile).replace(/\D/g, "");
+      if (digits.length === 10) {
+        sender_mobile = "91" + digits;
+      } else if (digits.length > 10) {
+        sender_mobile = digits;
+      }
+    }
+
+    let sender_name = senderName || "NA";
+    // Check if CRM lead has a real name
+    try {
+      const crmDb = process.env.CRM_DB_NAME || "stockology_db_backup";
+      const digits = String(sender_mobile).replace(/\D/g, "");
+      const last10 = digits.length >= 10 ? digits.slice(-10) : digits;
+      if (last10 && last10.length >= 7) {
+        const [crmLead] = await query(
+          "SELECT name FROM " + crmDb + ".crm_leads WHERE phone LIKE ? ORDER BY updatedAt DESC LIMIT 1",
+          ["%" + last10 + "%"]
+        );
+        if (crmLead?.name && crmLead.name !== "NA") {
+          sender_name = crmLead.name;
+        }
+      }
+    } catch (_) {}
+
     const origin = "qr";
     const origin_instance_id = JSON.stringify(originInstanceId);
 
@@ -291,7 +259,8 @@ async function updateChatInMysql({
     }
 
     if (chat) {
-      const shouldUpdateAgent = Boolean(responsibleAgent && (!chat.assigned_agent || chat.assigned_agent === "null" || chat.assigned_agent === "[]" || chat.assigned_agent === ""));
+      const isCurrentlyUnassigned = !chat.assigned_agent || chat.assigned_agent === "null" || chat.assigned_agent === "[]" || chat.assigned_agent === "" || String(chat.assigned_agent).includes('"unassigned":true');
+      const shouldUpdateAgent = Boolean(responsibleAgent && (isCurrentlyUnassigned || !String(responsibleAgent).includes('"unassigned":true')));
       await query(
         `UPDATE beta_chats 
          SET last_message = ?, 
