@@ -258,6 +258,9 @@ async function updateChatInMysql({
       unread_count = chat?.unread_count ? chat.unread_count + 1 : 1;
     }
 
+    const msgEpoch = Number(actualMsg?.timestamp) || Math.round(Date.now() / 1000);
+    const msgDate = moment.unix(msgEpoch).format("YYYY-MM-DD HH:mm:ss");
+
     if (chat) {
       const isCurrentlyUnassigned = !chat.assigned_agent || chat.assigned_agent === "null" || chat.assigned_agent === "[]" || chat.assigned_agent === "" || String(chat.assigned_agent).includes('"unassigned":true');
       const shouldUpdateAgent = Boolean(responsibleAgent && (isCurrentlyUnassigned || !String(responsibleAgent).includes('"unassigned":true')));
@@ -267,7 +270,8 @@ async function updateChatInMysql({
              sender_name = ?, 
              sender_mobile = ?, 
              origin = ?, 
-             origin_instance_id = ?
+             origin_instance_id = ?,
+             updatedAt = ?
              ${unread_count > 0 ? ", unread_count = ?" : ""}
              ${shouldUpdateAgent ? ", assigned_agent = ?" : ""}
          WHERE chat_id = ? AND uid = ?`,
@@ -277,6 +281,7 @@ async function updateChatInMysql({
           sender_mobile,
           origin,
           origin_instance_id,
+          msgDate,
           ...(unread_count > 0 ? [unread_count] : []),
           ...(shouldUpdateAgent ? [responsibleAgent] : []),
           chatId,
@@ -286,8 +291,15 @@ async function updateChatInMysql({
     } else {
       await query(
         `INSERT INTO beta_chats 
-         (uid, chat_id, last_message, sender_name, sender_mobile, origin, origin_instance_id, unread_count, assigned_agent) 
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         (uid, chat_id, last_message, sender_name, sender_mobile, origin, origin_instance_id, unread_count, assigned_agent, createdAt, updatedAt) 
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE
+           last_message = VALUES(last_message),
+           sender_name = IF(VALUES(sender_name) != 'NA', VALUES(sender_name), sender_name),
+           origin_instance_id = VALUES(origin_instance_id),
+           unread_count = unread_count + VALUES(unread_count),
+           assigned_agent = IF(VALUES(assigned_agent) IS NOT NULL, VALUES(assigned_agent), assigned_agent),
+           updatedAt = VALUES(updatedAt)`,
         [
           uid,
           chatId,
@@ -298,6 +310,8 @@ async function updateChatInMysql({
           origin_instance_id,
           unread_count,
           responsibleAgent,
+          msgDate,
+          msgDate,
         ]
       );
     }
@@ -355,24 +369,32 @@ function getChatId({ instanceNumber, senderMobile, uid }) {
 
 async function saveMessageToConversation({ uid, chatId, messageData }) {
   try {
-    await query(`INSERT INTO beta_conversation SET ?`, {
-      type: messageData.type,
-      metaChatId: messageData.metaChatId,
-      msgContext: JSON.stringify(messageData.msgContext),
-      reaction: messageData.reaction || "",
-      timestamp: messageData.timestamp,
-      senderName: messageData.senderName,
-      senderMobile: messageData.senderMobile,
-      star: messageData.star ? 1 : 0,
-      route: messageData.route,
-      context: messageData.context ? JSON.stringify(messageData.context) : null,
-      origin: messageData.origin,
-      uid,
-      chat_id: chatId,
-    });
+    await query(
+      `INSERT INTO beta_conversation 
+       (type, metaChatId, msgContext, reaction, timestamp, senderName, senderMobile, star, route, context, origin, uid, chat_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE
+         reaction = IF(VALUES(reaction) != "", VALUES(reaction), reaction),
+         status = IF(VALUES(status) != "", VALUES(status), status)`,
+      [
+        messageData.type,
+        messageData.metaChatId,
+        JSON.stringify(messageData.msgContext),
+        messageData.reaction || "",
+        messageData.timestamp,
+        messageData.senderName,
+        messageData.senderMobile,
+        messageData.star ? 1 : 0,
+        messageData.route,
+        messageData.context ? JSON.stringify(messageData.context) : null,
+        messageData.origin,
+        uid,
+        chatId,
+      ]
+    );
     return true;
   } catch (err) {
-    console.log("Error saving message to conversation:", err);
+    console.log("Error saving message to conversation:", err.message);
     return false;
   }
 }
@@ -559,15 +581,20 @@ async function processBaileysMsg({ body, uid, userFromMysql, chatId }) {
       contextData = referencedMessageData;
     }
 
+    // Extract actual message timestamp from Baileys
+    let rawTs = body.messageTimestamp;
+    if (typeof rawTs === "object" && rawTs !== null && "low" in rawTs) {
+      rawTs = rawTs.low;
+    }
+    const msgTimestamp = Number(rawTs) || Math.round(Date.now() / 1000);
+
     // Create the new message object
     const newMessage = {
       type: msgContext.type,
       metaChatId: body.key.id,
       msgContext,
       reaction: "",
-      timestamp: getCurrentTimestampInTimeZone(
-        userFromMysql?.timezone || body.messageTimestamp
-      ),
+      timestamp: msgTimestamp,
       senderName: body.pushName || "NA",
       senderMobile: body.key.remoteJid
         ? body.key.remoteJid.split("@")[0]

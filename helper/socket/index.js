@@ -419,7 +419,17 @@ function processSocketEvent({
             console.warn("CRM Lead enrichment in get_chat_list:", enrichErr.message);
           }
 
-          const chatData = mergeArraysWithPhonebook(chats, contacts);
+          // Deduplicate chats array by chat_id
+          const seenChatIds = new Set();
+          const uniqueChats = [];
+          for (const c of chats) {
+            if (!seenChatIds.has(c.chat_id)) {
+              seenChatIds.add(c.chat_id);
+              uniqueChats.push(c);
+            }
+          }
+
+          const chatData = mergeArraysWithPhonebook(uniqueChats, contacts);
 
           const agentData = await query(
             `SELECT * FROM agents WHERE owner_uid = ?`,

@@ -378,7 +378,7 @@ router.get("/devices", async (req, res) => {
 // POST /api/sso/devices/create - Create a new instance and start Baileys QR generation
 router.post("/devices/create", async (req, res) => {
   try {
-    const { title, departmentId, departmentName, departmentHead, teamId, teamName, teamLeader, assignedUserId, assignedUserName, secret } = req.body;
+    const { title, departmentId, departmentName, departmentHead, teamId, teamName, teamLeader, assignedUserId, assignedUserName, syncOldChats, secret } = req.body;
     const expectedSecret = process.env.SSO_SECRET || process.env.JWTKEY;
     if (secret && secret !== expectedSecret) {
       return res.status(401).json({ success: false, msg: "Unauthorized" });
@@ -401,6 +401,7 @@ router.post("/devices/create", async (req, res) => {
       teamLeader: teamLeader || null,
       assignedUserId: assignedUserId || null,
       assignedUserName: assignedUserName || null,
+      syncOldChats: Boolean(syncOldChats),
     });
 
     await query(
@@ -705,6 +706,28 @@ router.post("/sync-crm-users", async (req, res) => {
     if (rootPool) {
       try { await rootPool.end(); } catch (_) {}
     }
+  }
+});
+
+
+// POST /api/sso/devices/:uniqueId/toggle-sync-history - Toggle historical chat sync for a device
+router.post("/devices/:uniqueId/toggle-sync-history", async (req, res) => {
+  try {
+    const { uniqueId } = req.params;
+    const { syncOldChats } = req.body;
+    const [inst] = await query("SELECT id, other FROM instance WHERE uniqueId = ? LIMIT 1", [uniqueId]);
+    if (!inst) return res.status(404).json({ success: false, msg: "Instance not found" });
+    
+    let otherObj = {};
+    try {
+      otherObj = typeof inst.other === "string" ? JSON.parse(inst.other) : (inst.other || {});
+    } catch (_) {}
+    otherObj.syncOldChats = Boolean(syncOldChats);
+
+    await query("UPDATE instance SET other = ? WHERE id = ?", [JSON.stringify(otherObj), inst.id]);
+    res.json({ success: true, syncOldChats: otherObj.syncOldChats });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
   }
 });
 

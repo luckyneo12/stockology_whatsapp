@@ -393,24 +393,60 @@ const createSession = async (
         return; // Skip — this is a Story/Status update
       }
 
-      if ((m.type === "notify" || m.type === "append") && remoteJid && (remoteJid.endsWith("@s.whatsapp.net") || remoteJid.endsWith("@c.us"))) {
-        const uid = await resolveUidFromSessionId(sessionId);
-        if (uid) {
-          processMessage({
-            body: message,
-            uid,
-            origin: "qr",
-            getSession,
-            sessionId,
-            qrType: m.type === "append" ? "append" : "upsert",
-          });
+      if (remoteJid && (remoteJid.endsWith("@s.whatsapp.net") || remoteJid.endsWith("@c.us"))) {
+        const allowOldSync = await checkSyncOldChats();
+
+        // If old chats sync is disabled:
+        if (!allowOldSync) {
+          // 1. Skip append events (phone history backlog)
+          if (m.type === "append") return;
+
+          // 2. Skip messages older than 5 minutes (backlog emitted during initial scan)
+          let rawTs = message.messageTimestamp;
+          if (typeof rawTs === "object" && rawTs !== null && "low" in rawTs) rawTs = rawTs.low;
+          const msgTs = Number(rawTs) || 0;
+          if (msgTs > 0 && (Date.now() / 1000 - msgTs) > 300) {
+            return;
+          }
+        }
+
+        if (m.type === "notify" || (allowOldSync && m.type === "append")) {
+          const uid = await resolveUidFromSessionId(sessionId);
+          if (uid) {
+            processMessage({
+              body: message,
+              uid,
+              origin: "qr",
+              getSession,
+              sessionId,
+              qrType: m.type === "append" ? "append" : "upsert",
+            });
+          }
         }
       }
     });
 
+    // Helper to check if this instance allows historical chat sync
+    const checkSyncOldChats = async () => {
+      try {
+        const [inst] = await query("SELECT other FROM instance WHERE uniqueId = ? LIMIT 1", [sessionId]);
+        if (inst?.other) {
+          const meta = typeof inst.other === "string" ? JSON.parse(inst.other) : inst.other;
+          return Boolean(meta?.syncOldChats);
+        }
+      } catch (_) {}
+      return false; // Default: FALSE (do NOT sync old chats)
+    };
+
     // Handle historical message sync from WhatsApp Web
     sock.ev.on("messaging-history.set", async ({ chats, contacts, messages, isLatest }) => {
       try {
+        const allowOldSync = await checkSyncOldChats();
+        if (!allowOldSync) {
+          newLogger.log(`[Session ${sessionId}] Skipping historical chat sync (syncOldChats is OFF).`);
+          return;
+        }
+
         const uid = await resolveUidFromSessionId(sessionId);
         if (!uid) return;
         if (Array.isArray(messages)) {
