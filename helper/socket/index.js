@@ -48,7 +48,7 @@ function processSocketEvent({
 
     try {
       switch (type) {
-        case "get_chat_list":
+        case "get_chat_list": {
           const {
             search = "",
             origin = "",
@@ -74,58 +74,129 @@ function processSocketEvent({
             queryParams.push(`%"title":"${labelFilter}"%`);
           }
 
-          // Agent vs user filtering
-          if (isAgent) {
-            // First restrict chats to the owner account.
-            conditions.push(`uid = ?`);
-            queryParams.push(socket?.userData?.owner_uid);
+          // ── Scope-aware chat filtering (SELF, TEAM, DEPARTMENT, COMPANY) ──
+          const ownerUid = isAgent ? socket?.userData?.owner_uid : uid;
+          conditions.push(`uid = ?`);
+          queryParams.push(ownerUid);
 
-            let agentMeta = null;
-            try {
-              agentMeta = typeof socket?.userData?.comments === "string"
-                ? JSON.parse(socket.userData.comments)
-                : socket?.userData?.comments;
-            } catch (_) {}
+          let agentMeta = null;
+          try {
+            agentMeta = typeof socket?.userData?.comments === "string"
+              ? JSON.parse(socket.userData.comments)
+              : socket?.userData?.comments;
+          } catch (_) {}
 
-            const isLeader = agentMeta?.role === "MANAGER" || agentMeta?.role === "LEADER";
+          let effectiveScope = socket?.decodedToken?.dataScope || agentMeta?.dataScope;
+          const crmUserId = socket?.decodedToken?.crmUserId || agentMeta?.crmUserId;
+          const departmentId = socket?.decodedToken?.departmentId || agentMeta?.departmentId;
+          const teamId = socket?.decodedToken?.teamId || agentMeta?.teamId;
+          const scopedUserIds = socket?.decodedToken?.scopedUserIds || [];
+          const agentId = socket?.userData?.id;
+          const agentUid = socket?.userData?.uid;
+          const isLeader = agentMeta?.role === "MANAGER" || agentMeta?.role === "LEADER" || socket?.decodedToken?.isLeader;
+          const isDeptHead = agentMeta?.role === "MANAGER" || socket?.decodedToken?.isDeptHead;
 
-            if (isLeader && agentMeta?.teamId) {
-              // Team Leader can see:
-              // 1. Chats assigned directly to them (id matches)
-              // 2. Chats tagged with their teamId
-              // 3. Unassigned / new chats so Team Head can view and allocate
-              conditions.push(`(
-                assigned_agent LIKE ? OR 
-                assigned_agent LIKE ? OR
-                assigned_agent LIKE ? OR
-                assigned_agent IS NULL OR
-                assigned_agent = 'null' OR
-                assigned_agent = '[]' OR
-                assigned_agent = ''
-              )`);
+          // Master account always COMPANY scope
+          if (!isAgent && socket?.userData?.email === "sstockology@gmail.com") {
+            effectiveScope = "COMPANY";
+          }
+          if (!effectiveScope) {
+            effectiveScope = isAgent ? "SELF" : "COMPANY";
+          }
+          effectiveScope = String(effectiveScope).toUpperCase();
 
-              queryParams.push(
-                `%"id":${socket.userData.id}%`,
-                `%"id":"${socket.userData.id}"%`,
-                `%"teamId":"${agentMeta.teamId}"%`,
-              );
+          if (effectiveScope === "SELF") {
+            // SELF: strictly only chats assigned directly to this user/agent
+            const selfConds = [];
+            if (crmUserId) {
+              selfConds.push(`assigned_agent LIKE ?`);
+              queryParams.push(`%"crmUserId":"${crmUserId}"%`);
+            }
+            if (agentUid) {
+              selfConds.push(`assigned_agent LIKE ?`);
+              queryParams.push(`%"uid":"${agentUid}"%`);
+            }
+            if (agentId) {
+              selfConds.push(`assigned_agent LIKE ?`);
+              queryParams.push(`%"id":${agentId}%`);
+              selfConds.push(`assigned_agent LIKE ?`);
+              queryParams.push(`%"id":"${agentId}"%`);
+            }
+            if (selfConds.length > 0) {
+              conditions.push(`(${selfConds.join(" OR ")})`);
             } else {
-              // Regular team member / telecaller:
-              // ONLY sees chats assigned directly to them! Other members' chats are strictly hidden!
-              conditions.push(`(
-                assigned_agent LIKE ? OR 
-                assigned_agent LIKE ?
-              )`);
-
-              queryParams.push(
-                `%"id":${socket.userData.id}%`,
-                `%"id":"${socket.userData.id}"%`,
+              conditions.push(`1 = 0`);
+            }
+          } else if (effectiveScope === "TEAM") {
+            // TEAM: chats belonging to team members, tagged teamId, or (for leaders) unassigned
+            const teamConds = [];
+            if (teamId) {
+              teamConds.push(`assigned_agent LIKE ?`);
+              queryParams.push(`%"teamId":"${teamId}"%`);
+            }
+            if (crmUserId) {
+              teamConds.push(`assigned_agent LIKE ?`);
+              queryParams.push(`%"crmUserId":"${crmUserId}"%`);
+            }
+            if (agentId) {
+              teamConds.push(`assigned_agent LIKE ?`);
+              queryParams.push(`%"id":${agentId}%`);
+              teamConds.push(`assigned_agent LIKE ?`);
+              queryParams.push(`%"id":"${agentId}"%`);
+            }
+            if (Array.isArray(scopedUserIds) && scopedUserIds.length > 0) {
+              for (const sid of scopedUserIds) {
+                teamConds.push(`assigned_agent LIKE ?`);
+                queryParams.push(`%"crmUserId":"${sid}"%`);
+              }
+            }
+            if (isLeader) {
+              teamConds.push(
+                `assigned_agent IS NULL OR assigned_agent = 'null' OR assigned_agent = '[]' OR assigned_agent = ''`
               );
             }
-          } else {
-            conditions.push(`uid = ?`);
-            queryParams.push(uid);
+            if (teamConds.length > 0) {
+              conditions.push(`(${teamConds.join(" OR ")})`);
+            } else {
+              conditions.push(`(assigned_agent LIKE ? OR assigned_agent LIKE ?)`);
+              queryParams.push(`%"crmUserId":"${crmUserId}"%`, `%"id":${agentId}%`);
+            }
+          } else if (effectiveScope === "DEPARTMENT") {
+            // DEPARTMENT: chats belonging to department members, departmentId, or (for dept heads) unassigned
+            const deptConds = [];
+            if (departmentId) {
+              deptConds.push(`assigned_agent LIKE ?`);
+              queryParams.push(`%"departmentId":"${departmentId}"%`);
+            }
+            if (crmUserId) {
+              deptConds.push(`assigned_agent LIKE ?`);
+              queryParams.push(`%"crmUserId":"${crmUserId}"%`);
+            }
+            if (agentId) {
+              deptConds.push(`assigned_agent LIKE ?`);
+              queryParams.push(`%"id":${agentId}%`);
+              deptConds.push(`assigned_agent LIKE ?`);
+              queryParams.push(`%"id":"${agentId}"%`);
+            }
+            if (Array.isArray(scopedUserIds) && scopedUserIds.length > 0) {
+              for (const sid of scopedUserIds) {
+                deptConds.push(`assigned_agent LIKE ?`);
+                queryParams.push(`%"crmUserId":"${sid}"%`);
+              }
+            }
+            if (isDeptHead || isLeader) {
+              deptConds.push(
+                `assigned_agent IS NULL OR assigned_agent = 'null' OR assigned_agent = '[]' OR assigned_agent = ''`
+              );
+            }
+            if (deptConds.length > 0) {
+              conditions.push(`(${deptConds.join(" OR ")})`);
+            } else {
+              conditions.push(`(assigned_agent LIKE ? OR assigned_agent LIKE ?)`);
+              queryParams.push(`%"crmUserId":"${crmUserId}"%`, `%"id":${agentId}%`);
+            }
           }
+          // COMPANY / ALL: Full access under ownerUid, no condition appended
 
           // Enhanced search to include chat tags
           if (search) {
@@ -230,6 +301,7 @@ function processSocketEvent({
             agentData,
           });
           break;
+        }
 
         case "export_chats": {
           const {

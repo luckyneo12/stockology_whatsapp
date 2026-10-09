@@ -162,7 +162,7 @@ router.delete("/plans/:id", async (req, res) => {
 // POST /api/sso/auth - Unified SSO session creator
 router.post("/auth", async (req, res) => {
   try {
-    const { email, name, role, secret, parentEmail, parentName, planTitle, planId } = req.body;
+    const { email, name, role, secret, parentEmail, parentName, planTitle, planId, crmUserId, dataScope, departmentId, teamId, scopedUserIds } = req.body;
 
     const expectedSecret = process.env.SSO_SECRET || process.env.JWTKEY;
     if (!secret || secret !== expectedSecret) {
@@ -276,6 +276,11 @@ router.post("/auth", async (req, res) => {
           email: agent.email,
           owner_uid: agent.owner_uid,
           tokenVersion: agent.tokenVersion || 0,
+          crmUserId: crmUserId || null,
+          dataScope: dataScope || "SELF",
+          departmentId: departmentId || null,
+          teamId: teamId || null,
+          scopedUserIds: Array.isArray(scopedUserIds) ? scopedUserIds : [],
         },
         process.env.JWTKEY,
         {}
@@ -321,6 +326,12 @@ router.post("/auth", async (req, res) => {
         uid: user.uid,
         role: "user",
         tokenVersion: user.tokenVersion || 0,
+        email: user.email,
+        crmUserId: crmUserId || null,
+        dataScope: dataScope || "COMPANY",
+        departmentId: departmentId || null,
+        teamId: teamId || null,
+        scopedUserIds: Array.isArray(scopedUserIds) ? scopedUserIds : [],
       },
       process.env.JWTKEY,
       { expiresIn: "7d" }
@@ -556,6 +567,9 @@ router.post("/sync-chat-assignments", async (req, res) => {
               leadId: lead.id,
               teamId: agComments.teamId || null,
               teamName: agComments.teamName || null,
+              departmentId: agComments.departmentId || null,
+              departmentName: agComments.departmentName || null,
+              dataScope: agComments.dataScope || "SELF",
             },
           ]);
 
@@ -614,6 +628,7 @@ router.post("/sync-crm-users", async (req, res) => {
         cm.id as memberId,
         cm.role as memberRole,
         cm.status as memberStatus,
+        cm.dataScope as dataScope,
         u.id as crmUserId,
         u.fullName as name,
         u.email as email,
@@ -656,6 +671,7 @@ router.post("/sync-crm-users", async (req, res) => {
         teamLeader: m.teamLeader || null,
         role: m.memberRole || "MEMBER",
         status: m.memberStatus || "ACTIVE",
+        dataScope: m.dataScope || "SELF",
       };
 
       const readableComment = `🏢 ${deptDisplay} | 👥 ${teamDisplay} | ${m.memberRole} | ${m.memberStatus} -- ${JSON.stringify(meta)}`;

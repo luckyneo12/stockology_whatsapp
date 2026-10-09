@@ -107,6 +107,9 @@ async function resolveResponsibleAgentForChat({ senderMobile, sessionId, uid }) 
             leadId: lead.id,
             teamId: agComments.teamId || null,
             teamName: agComments.teamName || null,
+            departmentId: agComments.departmentId || null,
+            departmentName: agComments.departmentName || null,
+            dataScope: agComments.dataScope || "SELF",
           },
         ]);
       }

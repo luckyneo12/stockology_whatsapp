@@ -1,34 +1,136 @@
 const router = require("express").Router();
 const { query } = require("../database/dbpromise.js");
-const validateUser = require("../middlewares/user.js");
+const validateUserOrAgent = require("../middlewares/userOrAgent.js");
 const { checkPlan } = require("../middlewares/plan.js");
 const logger = require("../utils/logger.js");
 
+// ── Helper to resolve scope context ──────────────────────────────────────────
+async function resolveScopeContext(req) {
+  let dataScope = req.decode.dataScope;
+  let crmUserId = req.decode.crmUserId;
+  let departmentId = req.decode.departmentId;
+  let teamId = req.decode.teamId;
+  let scopedUserIds = req.decode.scopedUserIds || [];
+  const isAgent = req.decode.role === "agent";
+  const agentId = isAgent ? req.decode.userData?.id : null;
+  const agentUid = req.decode.uid;
+  const ownerUid = isAgent ? req.decode.owner_uid : req.decode.uid;
+
+  let agentMeta = null;
+  if (isAgent && req.decode.userData?.comments) {
+    try {
+      agentMeta = typeof req.decode.userData.comments === "string"
+        ? JSON.parse(req.decode.userData.comments)
+        : req.decode.userData.comments;
+      if (agentMeta) {
+        if (!dataScope) dataScope = agentMeta.dataScope;
+        if (!crmUserId) crmUserId = agentMeta.crmUserId;
+        if (!departmentId) departmentId = agentMeta.departmentId;
+        if (!teamId) teamId = agentMeta.teamId;
+      }
+    } catch (_) {}
+  }
+
+  // Master admin account
+  if (req.decode.role === "user" && req.decode.email === "sstockology@gmail.com") {
+    dataScope = "COMPANY";
+  }
+
+  // Fallback to query CRM database if dataScope is still undetermined
+  if (!dataScope) {
+    try {
+      const crmDb = process.env.CRM_DB_NAME || "stockology_db_backup";
+      const crmRows = await query(
+        `SELECT cm.dataScope, cm.departmentId, cm.teamId, u.id as crmUserId 
+         FROM ${crmDb}.company_members cm 
+         JOIN ${crmDb}.users u ON cm.userId = u.id 
+         WHERE u.email = ? LIMIT 1`,
+        [req.decode.email]
+      );
+      if (crmRows && crmRows.length > 0) {
+        dataScope = crmRows[0].dataScope;
+        if (!crmUserId) crmUserId = crmRows[0].crmUserId;
+        if (!departmentId) departmentId = crmRows[0].departmentId;
+        if (!teamId) teamId = crmRows[0].teamId;
+      }
+    } catch (_) {}
+  }
+
+  if (!dataScope) {
+    dataScope = isAgent ? "SELF" : "COMPANY";
+  }
+
+  const isLeader = agentMeta?.role === "MANAGER" || agentMeta?.role === "LEADER" || (req.decode.role === "user" && dataScope !== "SELF");
+  const isDeptHead = agentMeta?.role === "MANAGER" || (req.decode.role === "user" && dataScope === "DEPARTMENT");
+
+  return {
+    ownerUid,
+    dataScope: String(dataScope).toUpperCase(),
+    crmUserId,
+    departmentId,
+    teamId,
+    scopedUserIds,
+    agentId,
+    agentUid,
+    isAgent,
+    isLeader,
+    isDeptHead,
+  };
+}
+
 // ── Move card ─────────────────────────────────────────────────────────────────
-router.post("/move_card", validateUser, checkPlan, async (req, res) => {
+router.post("/move_card", validateUserOrAgent, checkPlan, async (req, res) => {
   try {
-    const uid = req.decode.uid;
+    const scope = await resolveScopeContext(req);
     const { chatId, newLabelId, kanban_order } = req.body;
 
     if (!chatId) return res.json({ success: false, msg: "chatId is required" });
 
     const [chat] = await query(
-      `SELECT id, chat_label FROM beta_chats WHERE id = ? AND uid = ?`,
-      [chatId, uid],
+      `SELECT id, chat_label, assigned_agent FROM beta_chats WHERE id = ? AND uid = ?`,
+      [chatId, scope.ownerUid],
     );
     if (!chat) return res.json({ success: false, msg: "Chat not found" });
+
+    // Enforce scope check on card movement
+    const assignedStr = String(chat.assigned_agent || "");
+    if (scope.dataScope === "SELF") {
+      const isMine =
+        (scope.crmUserId && assignedStr.includes(`"crmUserId":"${scope.crmUserId}"`)) ||
+        (scope.agentUid && assignedStr.includes(`"uid":"${scope.agentUid}"`)) ||
+        (scope.agentId && (assignedStr.includes(`"id":${scope.agentId}`) || assignedStr.includes(`"id":"${scope.agentId}"`)));
+      if (!isMine) {
+        return res.status(403).json({ success: false, msg: "You can only manage chats assigned to you (SELF scope)." });
+      }
+    } else if (scope.dataScope === "TEAM") {
+      const isTeam =
+        (scope.teamId && assignedStr.includes(`"teamId":"${scope.teamId}"`)) ||
+        (scope.crmUserId && assignedStr.includes(`"crmUserId":"${scope.crmUserId}"`)) ||
+        (Array.isArray(scope.scopedUserIds) && scope.scopedUserIds.some((sid) => assignedStr.includes(`"crmUserId":"${sid}"`)));
+      if (!isTeam && !scope.isLeader) {
+        return res.status(403).json({ success: false, msg: "You can only manage chats within your TEAM scope." });
+      }
+    } else if (scope.dataScope === "DEPARTMENT") {
+      const isDept =
+        (scope.departmentId && assignedStr.includes(`"departmentId":"${scope.departmentId}"`)) ||
+        (scope.crmUserId && assignedStr.includes(`"crmUserId":"${scope.crmUserId}"`)) ||
+        (Array.isArray(scope.scopedUserIds) && scope.scopedUserIds.some((sid) => assignedStr.includes(`"crmUserId":"${sid}"`)));
+      if (!isDept && !scope.isDeptHead && !scope.isLeader) {
+        return res.status(403).json({ success: false, msg: "You can only manage chats within your DEPARTMENT scope." });
+      }
+    }
 
     if (!newLabelId) {
       await query(
         `UPDATE beta_chats SET chat_label = ?, kanban_order = ? WHERE id = ? AND uid = ?`,
-        [JSON.stringify([]), kanban_order ?? 0, chatId, uid],
+        [JSON.stringify([]), kanban_order ?? 0, chatId, scope.ownerUid],
       );
       return res.json({ success: true });
     }
 
     const [newLabel] = await query(
       `SELECT * FROM chat_tags WHERE id = ? AND uid = ?`,
-      [newLabelId, uid],
+      [newLabelId, scope.ownerUid],
     );
     if (!newLabel) return res.json({ success: false, msg: "Label not found" });
 
@@ -42,7 +144,7 @@ router.post("/move_card", validateUser, checkPlan, async (req, res) => {
 
     await query(
       `UPDATE beta_chats SET chat_label = ?, kanban_order = ? WHERE id = ? AND uid = ?`,
-      [JSON.stringify(updatedLabels), kanban_order ?? 0, chatId, uid],
+      [JSON.stringify(updatedLabels), kanban_order ?? 0, chatId, scope.ownerUid],
     );
 
     res.json({ success: true });
@@ -53,9 +155,9 @@ router.post("/move_card", validateUser, checkPlan, async (req, res) => {
 });
 
 // ── Update show_on_kanban for a tag ───────────────────────────────────────────
-router.post("/update_tag_kanban_visibility", validateUser, async (req, res) => {
+router.post("/update_tag_kanban_visibility", validateUserOrAgent, async (req, res) => {
   try {
-    const uid = req.decode.uid;
+    const scope = await resolveScopeContext(req);
     const { labelId, show_on_kanban } = req.body;
 
     if (!labelId)
@@ -63,7 +165,7 @@ router.post("/update_tag_kanban_visibility", validateUser, async (req, res) => {
 
     await query(
       `UPDATE chat_tags SET show_on_kanban = ? WHERE id = ? AND uid = ?`,
-      [show_on_kanban ? 1 : 0, labelId, uid],
+      [show_on_kanban ? 1 : 0, labelId, scope.ownerUid],
     );
 
     res.json({ success: true });
@@ -74,26 +176,109 @@ router.post("/update_tag_kanban_visibility", validateUser, async (req, res) => {
 });
 
 // ── Get board ─────────────────────────────────────────────────────────────────
-router.post("/get_board", validateUser, checkPlan, async (req, res) => {
+router.post("/get_board", validateUserOrAgent, checkPlan, async (req, res) => {
   try {
-    const uid = req.decode.uid;
+    const scope = await resolveScopeContext(req);
     const {
       search = "",
       limit = 20,
       offset = 0,
-      dateFilter = "lifetime", // today | yesterday | last7 | last30 | thisMonth | lifetime | custom
+      dateFilter = "lifetime",
       dateFrom = null,
       dateTo = null,
     } = req.body;
 
-    // Only fetch labels that are shown on kanban
     const labels = await query(
       `SELECT * FROM chat_tags WHERE uid = ? AND show_on_kanban = 1 ORDER BY id ASC`,
-      [uid],
+      [scope.ownerUid],
     );
 
     let searchCondition = `WHERE uid = ?`;
-    const params = [uid];
+    const params = [scope.ownerUid];
+
+    // ── Apply Access Scope Filter ───────────────────────────────────────────
+    if (scope.dataScope === "SELF") {
+      const selfConds = [];
+      if (scope.crmUserId) {
+        selfConds.push(`assigned_agent LIKE ?`);
+        params.push(`%"crmUserId":"${scope.crmUserId}"%`);
+      }
+      if (scope.agentUid) {
+        selfConds.push(`assigned_agent LIKE ?`);
+        params.push(`%"uid":"${scope.agentUid}"%`);
+      }
+      if (scope.agentId) {
+        selfConds.push(`assigned_agent LIKE ? OR assigned_agent LIKE ?`);
+        params.push(`%"id":${scope.agentId}%`, `%"id":"${scope.agentId}"%`);
+      }
+      if (selfConds.length > 0) {
+        searchCondition += ` AND (${selfConds.join(" OR ")})`;
+      } else {
+        searchCondition += ` AND 1 = 0`;
+      }
+    } else if (scope.dataScope === "TEAM") {
+      const teamConds = [];
+      if (scope.teamId) {
+        teamConds.push(`assigned_agent LIKE ?`);
+        params.push(`%"teamId":"${scope.teamId}"%`);
+      }
+      if (scope.crmUserId) {
+        teamConds.push(`assigned_agent LIKE ?`);
+        params.push(`%"crmUserId":"${scope.crmUserId}"%`);
+      }
+      if (scope.agentId) {
+        teamConds.push(`assigned_agent LIKE ? OR assigned_agent LIKE ?`);
+        params.push(`%"id":${scope.agentId}%`, `%"id":"${scope.agentId}"%`);
+      }
+      if (Array.isArray(scope.scopedUserIds) && scope.scopedUserIds.length > 0) {
+        for (const sid of scope.scopedUserIds) {
+          teamConds.push(`assigned_agent LIKE ?`);
+          params.push(`%"crmUserId":"${sid}"%`);
+        }
+      }
+      if (scope.isLeader) {
+        teamConds.push(
+          `assigned_agent IS NULL OR assigned_agent = 'null' OR assigned_agent = '[]' OR assigned_agent = ''`
+        );
+      }
+      if (teamConds.length > 0) {
+        searchCondition += ` AND (${teamConds.join(" OR ")})`;
+      } else {
+        searchCondition += ` AND (assigned_agent LIKE ? OR assigned_agent LIKE ?)`;
+        params.push(`%"crmUserId":"${scope.crmUserId}"%`, `%"id":${scope.agentId}%`);
+      }
+    } else if (scope.dataScope === "DEPARTMENT") {
+      const deptConds = [];
+      if (scope.departmentId) {
+        deptConds.push(`assigned_agent LIKE ?`);
+        params.push(`%"departmentId":"${scope.departmentId}"%`);
+      }
+      if (scope.crmUserId) {
+        deptConds.push(`assigned_agent LIKE ?`);
+        params.push(`%"crmUserId":"${scope.crmUserId}"%`);
+      }
+      if (scope.agentId) {
+        deptConds.push(`assigned_agent LIKE ? OR assigned_agent LIKE ?`);
+        params.push(`%"id":${scope.agentId}%`, `%"id":"${scope.agentId}"%`);
+      }
+      if (Array.isArray(scope.scopedUserIds) && scope.scopedUserIds.length > 0) {
+        for (const sid of scope.scopedUserIds) {
+          deptConds.push(`assigned_agent LIKE ?`);
+          params.push(`%"crmUserId":"${sid}"%`);
+        }
+      }
+      if (scope.isDeptHead || scope.isLeader) {
+        deptConds.push(
+          `assigned_agent IS NULL OR assigned_agent = 'null' OR assigned_agent = '[]' OR assigned_agent = ''`
+        );
+      }
+      if (deptConds.length > 0) {
+        searchCondition += ` AND (${deptConds.join(" OR ")})`;
+      } else {
+        searchCondition += ` AND (assigned_agent LIKE ? OR assigned_agent LIKE ?)`;
+        params.push(`%"crmUserId":"${scope.crmUserId}"%`, `%"id":${scope.agentId}%`);
+      }
+    }
 
     // ── Date filter ──────────────────────────────────────────────────────────
     const now = new Date();
@@ -120,7 +305,6 @@ router.post("/get_board", validateUser, checkPlan, async (req, res) => {
       searchCondition += ` AND DATE(updatedAt) BETWEEN ? AND ?`;
       params.push(dateFrom, dateTo);
     }
-    // lifetime → no date filter
 
     if (search) {
       searchCondition += ` AND (
@@ -178,7 +362,19 @@ router.post("/get_board", validateUser, checkPlan, async (req, res) => {
       }
     });
 
-    res.json({ success: true, labels, grouped, total, offset, limit });
+    res.json({
+      success: true,
+      labels,
+      grouped,
+      total,
+      offset,
+      limit,
+      scope: {
+        dataScope: scope.dataScope,
+        departmentId: scope.departmentId,
+        teamId: scope.teamId,
+      },
+    });
   } catch (err) {
     logger.error(err);
     res.json({ success: false, msg: "Something went wrong" });
