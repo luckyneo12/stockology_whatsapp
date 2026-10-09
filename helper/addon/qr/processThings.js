@@ -63,6 +63,125 @@ async function updateProfileMysql({
   }
 }
 
+// Resolve responsible agent or team head based on CRM Lead ownership and device allocation
+async function resolveResponsibleAgentForChat({ senderMobile, sessionId, uid }) {
+  try {
+    if (!senderMobile || senderMobile === "NA") return null;
+
+    // 1. Clean phone number: take last 10 digits
+    const digitsOnly = String(senderMobile).replace(/\D/g, "");
+    const last10Digits = digitsOnly.length >= 10 ? digitsOnly.slice(-10) : digitsOnly;
+    if (!last10Digits || last10Digits.length < 7) return null;
+
+    const crmDb = process.env.CRM_DB_NAME || "stockology_db_backup";
+
+    // 2. Lookup CRM lead by phone number
+    const leads = await query(
+      "SELECT id, name, phone, assignedTo, departmentId FROM " + crmDb + ".crm_leads WHERE phone LIKE ? ORDER BY updatedAt DESC LIMIT 1",
+      ["%" + last10Digits + "%"]
+    );
+
+    const lead = leads && leads.length > 0 ? leads[0] : null;
+
+    // 3. Scenario A: Lead is assigned in CRM to a specific sales executive/member
+    if (lead?.assignedTo) {
+      const matchedAgents = await query(
+        "SELECT id, uid, name, email, comments FROM agents WHERE comments LIKE ? LIMIT 1",
+        ['%"crmUserId":"' + lead.assignedTo + '"%']
+      );
+
+      if (matchedAgents && matchedAgents.length > 0) {
+        const ag = matchedAgents[0];
+        let agComments = {};
+        try {
+          agComments = typeof ag.comments === "string" ? JSON.parse(ag.comments) : ag.comments || {};
+        } catch (_) {}
+
+        return JSON.stringify([
+          {
+            id: ag.id,
+            uid: ag.uid,
+            name: ag.name,
+            email: ag.email,
+            crmUserId: lead.assignedTo,
+            leadId: lead.id,
+            teamId: agComments.teamId || null,
+            teamName: agComments.teamName || null,
+          },
+        ]);
+      }
+    }
+
+    // 4. Scenario B: Lead is not assigned to any specific member (or unknown number)
+    // Find instance allocation (team / department / leader)
+    const instances = await query(
+      "SELECT id, uid, uniqueId, other FROM instance WHERE uniqueId = ? OR id = ? LIMIT 1",
+      [sessionId, sessionId]
+    );
+
+    if (instances && instances.length > 0) {
+      let meta = {};
+      try {
+        meta = typeof instances[0].other === "string" ? JSON.parse(instances[0].other) : instances[0].other || {};
+      } catch (_) {}
+
+      // If instance is directly assigned to a specific user
+      if (meta?.assignedUserId) {
+        const userAgents = await query(
+          "SELECT id, uid, name, email, comments FROM agents WHERE comments LIKE ? LIMIT 1",
+          ['%"crmUserId":"' + meta.assignedUserId + '"%']
+        );
+        if (userAgents && userAgents.length > 0) {
+          const ag = userAgents[0];
+          return JSON.stringify([
+            {
+              id: ag.id,
+              uid: ag.uid,
+              name: ag.name,
+              email: ag.email,
+              assignedDirect: true,
+            },
+          ]);
+        }
+      }
+
+      // If instance is allocated to a team, find Team Leader
+      if (meta?.teamId) {
+        const teamLeaders = await query(
+          "SELECT id, uid, name, email, comments FROM agents WHERE (comments LIKE ? AND comments LIKE ?) OR (comments LIKE ? AND comments LIKE ?) LIMIT 1",
+          [
+            '%"teamId":"' + meta.teamId + '"%',
+            '%"role":"MANAGER"%',
+            '%"teamId":"' + meta.teamId + '"%',
+            '%"role":"LEADER"%',
+          ]
+        );
+
+        if (teamLeaders && teamLeaders.length > 0) {
+          const leader = teamLeaders[0];
+          return JSON.stringify([
+            {
+              id: leader.id,
+              uid: leader.uid,
+              name: leader.name,
+              email: leader.email,
+              isTeamHead: true,
+              teamId: meta.teamId,
+              teamName: meta.teamName,
+            },
+          ]);
+        }
+      }
+    }
+
+    // Fallback: null so Account Owner / Department Head sees it
+    return null;
+  } catch (err) {
+    console.error("resolveResponsibleAgentForChat error:", err);
+    return null;
+  }
+}
+
 async function updateChatInMysql({
   chatId,
   uid,
@@ -95,9 +214,21 @@ async function updateChatInMysql({
 
     // Check if chat exists
     const [chat] = await query(
-      `SELECT unread_count FROM beta_chats WHERE chat_id = ? AND uid = ? LIMIT 1`,
+      `SELECT unread_count, assigned_agent FROM beta_chats WHERE chat_id = ? AND uid = ? LIMIT 1`,
       [chatId, uid]
     );
+
+    // Resolve responsible agent from CRM lead or Team Head
+    let responsibleAgent = null;
+    try {
+      responsibleAgent = await resolveResponsibleAgentForChat({
+        senderMobile,
+        sessionId,
+        uid,
+      });
+    } catch (e) {
+      console.warn("Could not resolve responsible agent:", e.message);
+    }
 
     const last_message = JSON.stringify(actualMsg);
     const sender_name = senderName || "NA";
@@ -111,6 +242,7 @@ async function updateChatInMysql({
     }
 
     if (chat) {
+      const shouldUpdateAgent = Boolean(responsibleAgent && (!chat.assigned_agent || chat.assigned_agent === "null" || chat.assigned_agent === "[]" || chat.assigned_agent === ""));
       await query(
         `UPDATE beta_chats 
          SET last_message = ?, 
@@ -119,33 +251,25 @@ async function updateChatInMysql({
              origin = ?, 
              origin_instance_id = ?
              ${unread_count > 0 ? ", unread_count = ?" : ""}
+             ${shouldUpdateAgent ? ", assigned_agent = ?" : ""}
          WHERE chat_id = ? AND uid = ?`,
-        unread_count > 0
-          ? [
-              last_message,
-              sender_name,
-              sender_mobile,
-              origin,
-              origin_instance_id,
-              unread_count,
-              chatId,
-              uid,
-            ]
-          : [
-              last_message,
-              sender_name,
-              sender_mobile,
-              origin,
-              origin_instance_id,
-              chatId,
-              uid,
-            ]
+        [
+          last_message,
+          sender_name,
+          sender_mobile,
+          origin,
+          origin_instance_id,
+          ...(unread_count > 0 ? [unread_count] : []),
+          ...(shouldUpdateAgent ? [responsibleAgent] : []),
+          chatId,
+          uid,
+        ]
       );
     } else {
       await query(
         `INSERT INTO beta_chats 
          (uid, chat_id, last_message, sender_name, sender_mobile, origin, origin_instance_id, unread_count, assigned_agent) 
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, NULL)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           uid,
           chatId,
@@ -155,6 +279,7 @@ async function updateChatInMysql({
           origin,
           origin_instance_id,
           unread_count,
+          responsibleAgent,
         ]
       );
     }

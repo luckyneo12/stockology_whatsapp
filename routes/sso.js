@@ -507,4 +507,74 @@ router.delete("/devices/:uniqueId", async (req, res) => {
   }
 });
 
+// POST /api/sso/sync-chat-assignments - Bulk evaluate and sync existing chats with CRM leads
+router.post("/sync-chat-assignments", async (req, res) => {
+  try {
+    const { secret } = req.body || {};
+    const expectedSecret = process.env.SSO_SECRET || process.env.JWTKEY;
+    if (secret && secret !== expectedSecret) {
+      return res.status(401).json({ success: false, msg: "Unauthorized" });
+    }
+
+    const crmDb = process.env.CRM_DB_NAME || "stockology_db_backup";
+    const chats = await query(
+      "SELECT id, uid, chat_id, sender_mobile, assigned_agent FROM beta_chats WHERE sender_mobile IS NOT NULL AND sender_mobile != 'NA'"
+    );
+
+    let updatedCount = 0;
+    for (const c of chats) {
+      const digitsOnly = String(c.sender_mobile).replace(/\D/g, "");
+      const last10 = digitsOnly.length >= 10 ? digitsOnly.slice(-10) : digitsOnly;
+      if (!last10 || last10.length < 7) continue;
+
+      const leads = await query(
+        "SELECT id, name, phone, assignedTo FROM " + crmDb + ".crm_leads WHERE phone LIKE ? ORDER BY updatedAt DESC LIMIT 1",
+        ["%" + last10 + "%"]
+      );
+
+      if (leads && leads.length > 0 && leads[0].assignedTo) {
+        const lead = leads[0];
+        const agents = await query(
+          "SELECT id, uid, name, email, comments FROM agents WHERE comments LIKE ? LIMIT 1",
+          ['%"crmUserId":"' + lead.assignedTo + '"%']
+        );
+
+        if (agents && agents.length > 0) {
+          const ag = agents[0];
+          let agComments = {};
+          try {
+            agComments = typeof ag.comments === "string" ? JSON.parse(ag.comments) : ag.comments || {};
+          } catch (_) {}
+
+          const payload = JSON.stringify([
+            {
+              id: ag.id,
+              uid: ag.uid,
+              name: ag.name,
+              email: ag.email,
+              crmUserId: lead.assignedTo,
+              leadId: lead.id,
+              teamId: agComments.teamId || null,
+              teamName: agComments.teamName || null,
+            },
+          ]);
+
+          await query("UPDATE beta_chats SET assigned_agent = ? WHERE id = ?", [payload, c.id]);
+          updatedCount++;
+        }
+      }
+    }
+
+    res.json({
+      success: true,
+      msg: `Synced ${updatedCount} chats with CRM lead owners out of ${chats.length} chats`,
+      updatedCount,
+      totalChats: chats.length,
+    });
+  } catch (err) {
+    console.error("Error syncing chat assignments:", err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 module.exports = router;

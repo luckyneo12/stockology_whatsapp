@@ -77,20 +77,51 @@ function processSocketEvent({
           // Agent vs user filtering
           if (isAgent) {
             // First restrict chats to the owner account.
-            // This makes the assigned_agent LIKE scan much smaller.
             conditions.push(`uid = ?`);
             queryParams.push(socket?.userData?.owner_uid);
 
-            // Then filter chats assigned to this agent.
-            conditions.push(`(
-              assigned_agent LIKE ? OR 
-              assigned_agent LIKE ?
-            )`);
+            let agentMeta = null;
+            try {
+              agentMeta = typeof socket?.userData?.comments === "string"
+                ? JSON.parse(socket.userData.comments)
+                : socket?.userData?.comments;
+            } catch (_) {}
 
-            queryParams.push(
-              `%"id":${socket.userData.id}%`,
-              `%"id":"${socket.userData.id}"%`,
-            );
+            const isLeader = agentMeta?.role === "MANAGER" || agentMeta?.role === "LEADER";
+
+            if (isLeader && agentMeta?.teamId) {
+              // Team Leader can see:
+              // 1. Chats assigned directly to them (id matches)
+              // 2. Chats tagged with their teamId
+              // 3. Unassigned / new chats so Team Head can view and allocate
+              conditions.push(`(
+                assigned_agent LIKE ? OR 
+                assigned_agent LIKE ? OR
+                assigned_agent LIKE ? OR
+                assigned_agent IS NULL OR
+                assigned_agent = 'null' OR
+                assigned_agent = '[]' OR
+                assigned_agent = ''
+              )`);
+
+              queryParams.push(
+                `%"id":${socket.userData.id}%`,
+                `%"id":"${socket.userData.id}"%`,
+                `%"teamId":"${agentMeta.teamId}"%`,
+              );
+            } else {
+              // Regular team member / telecaller:
+              // ONLY sees chats assigned directly to them! Other members' chats are strictly hidden!
+              conditions.push(`(
+                assigned_agent LIKE ? OR 
+                assigned_agent LIKE ?
+              )`);
+
+              queryParams.push(
+                `%"id":${socket.userData.id}%`,
+                `%"id":"${socket.userData.id}"%`,
+              );
+            }
           } else {
             conditions.push(`uid = ?`);
             queryParams.push(uid);
