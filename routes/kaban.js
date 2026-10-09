@@ -94,8 +94,41 @@ router.post("/move_card", validateUserOrAgent, checkPlan, async (req, res) => {
 
     // Enforce scope check on card movement
     const assignedStr = String(chat.assigned_agent || "");
+    const originInstanceStr = String(chat.origin_instance_id || "");
+
+    // Helper to check if chat origin matches user's scoped devices
+    let belongsToScopeDevice = false;
+    if (originInstanceStr) {
+      if (scope.dataScope === "TEAM" && scope.teamId) {
+        const teamInsts = await query(
+          `SELECT uniqueId, number FROM instance WHERE uid = ? AND other LIKE ?`,
+          [scope.ownerUid, `%"teamId":"${scope.teamId}"%`]
+        );
+        belongsToScopeDevice = Array.isArray(teamInsts) && teamInsts.some(
+          (inst) => (inst.number && originInstanceStr.includes(inst.number)) || (inst.uniqueId && originInstanceStr.includes(inst.uniqueId))
+        );
+      } else if (scope.dataScope === "DEPARTMENT" && scope.departmentId) {
+        const deptInsts = await query(
+          `SELECT uniqueId, number FROM instance WHERE uid = ? AND other LIKE ?`,
+          [scope.ownerUid, `%"departmentId":"${scope.departmentId}"%`]
+        );
+        belongsToScopeDevice = Array.isArray(deptInsts) && deptInsts.some(
+          (inst) => (inst.number && originInstanceStr.includes(inst.number)) || (inst.uniqueId && originInstanceStr.includes(inst.uniqueId))
+        );
+      } else if (scope.dataScope === "SELF" && scope.crmUserId) {
+        const userInsts = await query(
+          `SELECT uniqueId, number FROM instance WHERE uid = ? AND other LIKE ?`,
+          [scope.ownerUid, `%"assignedUserId":"${scope.crmUserId}"%`]
+        );
+        belongsToScopeDevice = Array.isArray(userInsts) && userInsts.some(
+          (inst) => (inst.number && originInstanceStr.includes(inst.number)) || (inst.uniqueId && originInstanceStr.includes(inst.uniqueId))
+        );
+      }
+    }
+
     if (scope.dataScope === "SELF") {
       const isMine =
+        belongsToScopeDevice ||
         (scope.crmUserId && assignedStr.includes(`"crmUserId":"${scope.crmUserId}"`)) ||
         (scope.agentUid && assignedStr.includes(`"uid":"${scope.agentUid}"`)) ||
         (scope.agentId && (assignedStr.includes(`"id":${scope.agentId}`) || assignedStr.includes(`"id":"${scope.agentId}"`)));
@@ -104,6 +137,7 @@ router.post("/move_card", validateUserOrAgent, checkPlan, async (req, res) => {
       }
     } else if (scope.dataScope === "TEAM") {
       const isTeam =
+        belongsToScopeDevice ||
         (scope.teamId && assignedStr.includes(`"teamId":"${scope.teamId}"`)) ||
         (scope.crmUserId && assignedStr.includes(`"crmUserId":"${scope.crmUserId}"`)) ||
         (Array.isArray(scope.scopedUserIds) && scope.scopedUserIds.some((sid) => assignedStr.includes(`"crmUserId":"${sid}"`)));
@@ -112,6 +146,7 @@ router.post("/move_card", validateUserOrAgent, checkPlan, async (req, res) => {
       }
     } else if (scope.dataScope === "DEPARTMENT") {
       const isDept =
+        belongsToScopeDevice ||
         (scope.departmentId && assignedStr.includes(`"departmentId":"${scope.departmentId}"`)) ||
         (scope.crmUserId && assignedStr.includes(`"crmUserId":"${scope.crmUserId}"`)) ||
         (Array.isArray(scope.scopedUserIds) && scope.scopedUserIds.some((sid) => assignedStr.includes(`"crmUserId":"${sid}"`)));
@@ -202,6 +237,25 @@ router.post("/get_board", validateUserOrAgent, checkPlan, async (req, res) => {
       if (scope.crmUserId) {
         selfConds.push(`assigned_agent LIKE ?`);
         params.push(`%"crmUserId":"${scope.crmUserId}"%`);
+
+        try {
+          const userInstances = await query(
+            `SELECT uniqueId, number FROM instance WHERE uid = ? AND other LIKE ?`,
+            [scope.ownerUid, `%"assignedUserId":"${scope.crmUserId}"%`]
+          );
+          if (Array.isArray(userInstances)) {
+            for (const inst of userInstances) {
+              if (inst.number) {
+                selfConds.push(`origin_instance_id LIKE ?`);
+                params.push(`%${inst.number}%`);
+              }
+              if (inst.uniqueId) {
+                selfConds.push(`origin_instance_id LIKE ?`);
+                params.push(`%${inst.uniqueId}%`);
+              }
+            }
+          }
+        } catch (_) {}
       }
       if (scope.agentUid) {
         selfConds.push(`assigned_agent LIKE ?`);
@@ -221,6 +275,26 @@ router.post("/get_board", validateUserOrAgent, checkPlan, async (req, res) => {
       if (scope.teamId) {
         teamConds.push(`assigned_agent LIKE ?`);
         params.push(`%"teamId":"${scope.teamId}"%`);
+
+        // Include chats from all devices assigned to this team
+        try {
+          const teamInstances = await query(
+            `SELECT uniqueId, number FROM instance WHERE uid = ? AND other LIKE ?`,
+            [scope.ownerUid, `%"teamId":"${scope.teamId}"%`]
+          );
+          if (Array.isArray(teamInstances)) {
+            for (const inst of teamInstances) {
+              if (inst.number) {
+                teamConds.push(`origin_instance_id LIKE ?`);
+                params.push(`%${inst.number}%`);
+              }
+              if (inst.uniqueId) {
+                teamConds.push(`origin_instance_id LIKE ?`);
+                params.push(`%${inst.uniqueId}%`);
+              }
+            }
+          }
+        } catch (_) {}
       }
       if (scope.crmUserId) {
         teamConds.push(`assigned_agent LIKE ?`);
@@ -252,6 +326,26 @@ router.post("/get_board", validateUserOrAgent, checkPlan, async (req, res) => {
       if (scope.departmentId) {
         deptConds.push(`assigned_agent LIKE ?`);
         params.push(`%"departmentId":"${scope.departmentId}"%`);
+
+        // Include chats from all devices assigned to this department
+        try {
+          const deptInstances = await query(
+            `SELECT uniqueId, number FROM instance WHERE uid = ? AND other LIKE ?`,
+            [scope.ownerUid, `%"departmentId":"${scope.departmentId}"%`]
+          );
+          if (Array.isArray(deptInstances)) {
+            for (const inst of deptInstances) {
+              if (inst.number) {
+                deptConds.push(`origin_instance_id LIKE ?`);
+                params.push(`%${inst.number}%`);
+              }
+              if (inst.uniqueId) {
+                deptConds.push(`origin_instance_id LIKE ?`);
+                params.push(`%${inst.uniqueId}%`);
+              }
+            }
+          }
+        } catch (_) {}
       }
       if (scope.crmUserId) {
         deptConds.push(`assigned_agent LIKE ?`);

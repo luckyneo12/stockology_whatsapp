@@ -106,11 +106,30 @@ function processSocketEvent({
           effectiveScope = String(effectiveScope).toUpperCase();
 
           if (effectiveScope === "SELF") {
-            // SELF: strictly only chats assigned directly to this user/agent
+            // SELF: strictly only chats assigned directly to this user/agent OR devices directly assigned to this user
             const selfConds = [];
             if (crmUserId) {
               selfConds.push(`assigned_agent LIKE ?`);
               queryParams.push(`%"crmUserId":"${crmUserId}"%`);
+
+              try {
+                const userInstances = await query(
+                  `SELECT uniqueId, number FROM instance WHERE uid = ? AND other LIKE ?`,
+                  [ownerUid, `%"assignedUserId":"${crmUserId}"%`]
+                );
+                if (Array.isArray(userInstances)) {
+                  for (const inst of userInstances) {
+                    if (inst.number) {
+                      selfConds.push(`origin_instance_id LIKE ?`);
+                      queryParams.push(`%${inst.number}%`);
+                    }
+                    if (inst.uniqueId) {
+                      selfConds.push(`origin_instance_id LIKE ?`);
+                      queryParams.push(`%${inst.uniqueId}%`);
+                    }
+                  }
+                }
+              } catch (_) {}
             }
             if (agentUid) {
               selfConds.push(`assigned_agent LIKE ?`);
@@ -128,11 +147,31 @@ function processSocketEvent({
               conditions.push(`1 = 0`);
             }
           } else if (effectiveScope === "TEAM") {
-            // TEAM: chats belonging to team members, tagged teamId, or (for leaders) unassigned
+            // TEAM: chats belonging to team members, tagged teamId, or devices assigned to this team
             const teamConds = [];
             if (teamId) {
               teamConds.push(`assigned_agent LIKE ?`);
               queryParams.push(`%"teamId":"${teamId}"%`);
+
+              // Include all chats from devices assigned to this team
+              try {
+                const teamInstances = await query(
+                  `SELECT uniqueId, number FROM instance WHERE uid = ? AND other LIKE ?`,
+                  [ownerUid, `%"teamId":"${teamId}"%`]
+                );
+                if (Array.isArray(teamInstances)) {
+                  for (const inst of teamInstances) {
+                    if (inst.number) {
+                      teamConds.push(`origin_instance_id LIKE ?`);
+                      queryParams.push(`%${inst.number}%`);
+                    }
+                    if (inst.uniqueId) {
+                      teamConds.push(`origin_instance_id LIKE ?`);
+                      queryParams.push(`%${inst.uniqueId}%`);
+                    }
+                  }
+                }
+              } catch (_) {}
             }
             if (crmUserId) {
               teamConds.push(`assigned_agent LIKE ?`);
@@ -162,11 +201,31 @@ function processSocketEvent({
               queryParams.push(`%"crmUserId":"${crmUserId}"%`, `%"id":${agentId}%`);
             }
           } else if (effectiveScope === "DEPARTMENT") {
-            // DEPARTMENT: chats belonging to department members, departmentId, or (for dept heads) unassigned
+            // DEPARTMENT: chats belonging to department members, departmentId, or devices assigned to this department
             const deptConds = [];
             if (departmentId) {
               deptConds.push(`assigned_agent LIKE ?`);
               queryParams.push(`%"departmentId":"${departmentId}"%`);
+
+              // Include all chats from devices assigned to this department
+              try {
+                const deptInstances = await query(
+                  `SELECT uniqueId, number FROM instance WHERE uid = ? AND other LIKE ?`,
+                  [ownerUid, `%"departmentId":"${departmentId}"%`]
+                );
+                if (Array.isArray(deptInstances)) {
+                  for (const inst of deptInstances) {
+                    if (inst.number) {
+                      deptConds.push(`origin_instance_id LIKE ?`);
+                      queryParams.push(`%${inst.number}%`);
+                    }
+                    if (inst.uniqueId) {
+                      deptConds.push(`origin_instance_id LIKE ?`);
+                      queryParams.push(`%${inst.uniqueId}%`);
+                    }
+                  }
+                }
+              } catch (_) {}
             }
             if (crmUserId) {
               deptConds.push(`assigned_agent LIKE ?`);

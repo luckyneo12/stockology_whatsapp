@@ -126,10 +126,38 @@ async function loadAuthStateModule() {
   }
 }
 
+const sessionUidCache = new Map();
+
 /**
- * Extract user ID from session ID
+ * Resolve owner user ID from session ID (checks cache then instance table)
+ */
+async function resolveUidFromSessionId(sessionId) {
+  if (!sessionId) return null;
+  if (sessionUidCache.has(sessionId)) {
+    return sessionUidCache.get(sessionId);
+  }
+  try {
+    const rows = await query("SELECT uid FROM instance WHERE uniqueId = ? LIMIT 1", [sessionId]);
+    if (rows && rows.length > 0 && rows[0].uid) {
+      sessionUidCache.set(sessionId, rows[0].uid);
+      return rows[0].uid;
+    }
+  } catch (err) {
+    console.error("resolveUidFromSessionId db lookup error:", err.message);
+  }
+  const fallback = sessionId.split("_")[0];
+  sessionUidCache.set(sessionId, fallback);
+  return fallback;
+}
+
+/**
+ * Extract user ID from session ID synchronously (using cache or fallback)
  */
 function extractUidFromSessionId(input) {
+  if (!input) return null;
+  if (sessionUidCache.has(input)) {
+    return sessionUidCache.get(input);
+  }
   return input.split("_")[0];
 }
 
@@ -248,6 +276,14 @@ const createSession = async (
   options = { onQr: null, syncFullHistory: false },
 ) => {
   try {
+    // Pre-cache owner uid from instance table
+    try {
+      const instRows = await query("SELECT uid FROM instance WHERE uniqueId = ? LIMIT 1", [sessionId]);
+      if (instRows && instRows.length > 0 && instRows[0].uid) {
+        sessionUidCache.set(sessionId, instRows[0].uid);
+      }
+    } catch (_) {}
+
     // Load baileys functions first
     await loadBaileysIfNeeded();
 
@@ -357,8 +393,8 @@ const createSession = async (
         return; // Skip — this is a Story/Status update
       }
 
-      if (m.type === "notify" && remoteJid.endsWith("@s.whatsapp.net")) {
-        const uid = extractUidFromSessionId(sessionId);
+      if ((m.type === "notify" || m.type === "append") && remoteJid && (remoteJid.endsWith("@s.whatsapp.net") || remoteJid.endsWith("@c.us"))) {
+        const uid = await resolveUidFromSessionId(sessionId);
         if (uid) {
           processMessage({
             body: message,
@@ -366,9 +402,34 @@ const createSession = async (
             origin: "qr",
             getSession,
             sessionId,
-            qrType: "upsert",
+            qrType: m.type === "append" ? "append" : "upsert",
           });
         }
+      }
+    });
+
+    // Handle historical message sync from WhatsApp Web
+    sock.ev.on("messaging-history.set", async ({ chats, contacts, messages, isLatest }) => {
+      try {
+        const uid = await resolveUidFromSessionId(sessionId);
+        if (!uid) return;
+        if (Array.isArray(messages)) {
+          for (const msg of messages) {
+            const jid = msg?.key?.remoteJid;
+            if (jid && (jid.endsWith("@s.whatsapp.net") || jid.endsWith("@c.us")) && !jid.includes("broadcast")) {
+              processMessage({
+                body: msg,
+                uid,
+                origin: "qr",
+                getSession,
+                sessionId,
+                qrType: "upsert",
+              });
+            }
+          }
+        }
+      } catch (err) {
+        newLogger.error("messaging-history.set error:", err.message);
       }
     });
 

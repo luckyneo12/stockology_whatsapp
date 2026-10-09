@@ -171,9 +171,39 @@ async function resolveResponsibleAgentForChat({ senderMobile, sessionId, uid }) 
               isTeamHead: true,
               teamId: meta.teamId,
               teamName: meta.teamName,
+              departmentId: meta.departmentId || null,
+              departmentName: meta.departmentName || null,
+              deviceTitle: instances[0]?.title || null,
+              deviceNumber: instances[0]?.number || null,
             },
           ]);
         }
+
+        // Always attach team metadata so team members can view chats from their device
+        return JSON.stringify([
+          {
+            teamId: meta.teamId,
+            teamName: meta.teamName,
+            teamLeader: meta.teamLeader || null,
+            departmentId: meta.departmentId || null,
+            departmentName: meta.departmentName || null,
+            departmentHead: meta.departmentHead || null,
+            deviceTitle: instances[0]?.title || null,
+            deviceNumber: instances[0]?.number || null,
+          },
+        ]);
+      }
+
+      if (meta?.departmentId) {
+        return JSON.stringify([
+          {
+            departmentId: meta.departmentId,
+            departmentName: meta.departmentName,
+            departmentHead: meta.departmentHead || null,
+            deviceTitle: instances[0]?.title || null,
+            deviceNumber: instances[0]?.number || null,
+          },
+        ]);
       }
     }
 
@@ -212,8 +242,24 @@ async function updateChatInMysql({
     });
 
     const sessionData = await getSession(sessionId);
-    const originInstanceId =
-      sessionData?.authState?.creds?.me || sessionData.user;
+    let rawOriginInstance = sessionData?.authState?.creds?.me || sessionData?.user;
+
+    // Fetch device instance to ensure number and uniqueId are always preserved
+    let deviceInst = null;
+    try {
+      const instRows = await query(
+        "SELECT id, uid, title, number, uniqueId, other FROM instance WHERE uniqueId = ? OR id = ? LIMIT 1",
+        [sessionId, sessionId]
+      );
+      if (instRows && instRows.length > 0) deviceInst = instRows[0];
+    } catch (_) {}
+
+    const originInstanceId = {
+      ...(typeof rawOriginInstance === "object" && rawOriginInstance !== null ? rawOriginInstance : { id: rawOriginInstance || sessionId }),
+      uniqueId: sessionId,
+      number: deviceInst?.number || null,
+      title: deviceInst?.title || null,
+    };
 
     // Check if chat exists
     const [chat] = await query(
