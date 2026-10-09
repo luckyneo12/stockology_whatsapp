@@ -548,7 +548,11 @@ async function sendQrMsg({ uid, to, msgObj, chatInfo }) {
       return { success: false, msg: "Session not found locally" };
     }
 
-    const jid = chatInfo?.isGroup ? formatGroup(to) : formatPhone(to);
+    let cleanTo = String(to).replace(/\D/g, "");
+    if (cleanTo.length === 10) {
+      cleanTo = "91" + cleanTo;
+    }
+    const jid = chatInfo?.isGroup ? formatGroup(to) : (cleanTo ? cleanTo + "@s.whatsapp.net" : formatPhone(to));
 
     // logger.log({ qrObj, jid });
 
@@ -591,7 +595,12 @@ async function sendNewMessage({ sessionId, message, number }) {
       text: message,
     };
 
-    const jid = formatPhone(number);
+    let cleanNumber = String(number).replace(/\D/g, "");
+    if (cleanNumber.length === 10) {
+      cleanNumber = "91" + cleanNumber;
+    }
+
+    const jid = formatPhone(cleanNumber);
 
     const checkNumber = await isExists(session, jid, false);
 

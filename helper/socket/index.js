@@ -985,7 +985,15 @@ function processSocketEvent({
           }
 
           const senderName = chatInfo?.sender_name;
-          const senderMobile = chatInfo?.sender_mobile;
+          let senderMobile = chatInfo?.sender_mobile;
+          if (senderMobile && senderMobile !== "NA") {
+            const d = String(senderMobile).replace(/\D/g, "");
+            if (d.length === 10) {
+              senderMobile = "91" + d;
+            } else if (d.length > 10) {
+              senderMobile = d;
+            }
+          }
 
           if (!senderMobile || !senderMobile) {
             return socket.emit("error", { msg: "Please refresh the page" });
@@ -1291,7 +1299,7 @@ function processSocketEvent({
           break;
 
         case "send_new_message":
-          const { instance, number, message, recName } = payload;
+          let { instance, number, message, recName } = payload;
 
           if (!number || !message) {
             return socket.emit("error", {
@@ -1299,7 +1307,12 @@ function processSocketEvent({
             });
           }
 
-          const chatid = `${instance?.number}_${number?.replace("+", "")}_${
+          let normalizedNumber = String(number).replace(/\D/g, "");
+          if (normalizedNumber.length === 10) {
+            normalizedNumber = "91" + normalizedNumber;
+          }
+
+          const chatid = `${instance?.number}_${normalizedNumber}_${
             isAgent ? socket?.userData?.owner_uid : uid
           }`;
 
@@ -1317,7 +1330,7 @@ function processSocketEvent({
           const sendNewMsg = await sendNewMessage({
             sessionId: instance?.uniqueId,
             message,
-            number,
+            number: normalizedNumber,
           });
 
           if (!sendNewMsg?.success) {
@@ -1339,7 +1352,7 @@ function processSocketEvent({
               type: "text",
               timestamp: userTimezone || "NA",
               senderName: recName || "NA",
-              senderMobile: number?.replace("+", "") || "NA",
+              senderMobile: normalizedNumber,
             });
 
             const msgObjNew = { ...msgObj, metaChatId: sendNewMsg?.id };
@@ -1375,7 +1388,7 @@ function processSocketEvent({
                 JSON.stringify(originInstanceId),
                 chatid,
                 JSON.stringify(messageData),
-                number?.replace("+", ""),
+                normalizedNumber,
                 "qr",
                 isAgent ? JSON.stringify([socket?.userData]) : null,
               ],

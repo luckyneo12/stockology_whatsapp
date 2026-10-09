@@ -654,8 +654,13 @@ const getGroupData = async (session, jid) => {
  * Format phone number to WhatsApp JID
  */
 const formatPhone = (phone) => {
+  if (!phone) return "";
   if (phone.endsWith("@s.whatsapp.net")) return phone;
-  let formatted = phone.replace(/\D/g, "");
+  let formatted = String(phone).replace(/\D/g, "");
+  // If 10-digit Indian number, prepend India country code 91
+  if (formatted.length === 10) {
+    formatted = "91" + formatted;
+  }
   return formatted + "@s.whatsapp.net";
 };
 
