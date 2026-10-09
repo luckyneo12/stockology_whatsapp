@@ -577,4 +577,119 @@ router.post("/sync-chat-assignments", async (req, res) => {
   }
 });
 
+
+// POST /api/sso/sync-crm-users - Sync all CRM users & hierarchy to agents table under sstockology@gmail.com
+router.post("/sync-crm-users", async (req, res) => {
+  let rootPool = null;
+  try {
+    const mysql = require("mysql2/promise");
+    const dbHost = process.env.DBHOST || "127.0.0.1";
+    const dbPort = Number(process.env.DBPORT) || 3306;
+    const rootUser = process.env.CRM_DB_USER || "root";
+    const rootPass = process.env.CRM_DB_PASS || "Admin@123456";
+    const crmDb = process.env.CRM_DB_NAME || "stockology_db_backup";
+    const whatscrmDb = process.env.DBNAME || "stockology_whatscrm";
+
+    rootPool = mysql.createPool({
+      host: dbHost,
+      port: dbPort,
+      user: rootUser,
+      password: rootPass,
+      database: whatscrmDb,
+    });
+
+    // 1. Master user sstockology@gmail.com
+    const [masterUsers] = await rootPool.query("SELECT uid FROM user WHERE email = \x27sstockology@gmail.com\x27");
+    if (!masterUsers || masterUsers.length === 0) {
+      return res.status(404).json({ success: false, error: "Master user sstockology@gmail.com not found" });
+    }
+    const masterUid = masterUsers[0].uid;
+
+    // 2. Clean up non-master users from user table
+    await rootPool.query("DELETE FROM user WHERE email != \x27sstockology@gmail.com\x27");
+
+    // 3. Query all CRM members joined with users, departments, and teams
+    const [members] = await rootPool.query(`
+      SELECT 
+        cm.id as memberId,
+        cm.role as memberRole,
+        cm.status as memberStatus,
+        u.id as crmUserId,
+        u.fullName as name,
+        u.email as email,
+        u.phone as phone,
+        cd.id as departmentId,
+        cd.name as departmentName,
+        u_head.fullName as departmentHead,
+        ct.id as teamId,
+        ct.name as teamName,
+        u_lead.fullName as teamLeader
+      FROM ${crmDb}.company_members cm
+      JOIN ${crmDb}.users u ON cm.userId = u.id
+      LEFT JOIN ${crmDb}.company_departments cd ON cm.departmentId = cd.id
+      LEFT JOIN ${crmDb}.users u_head ON cd.headId = u_head.id
+      LEFT JOIN ${crmDb}.company_teams ct ON cm.teamId = ct.id
+      LEFT JOIN ${crmDb}.users u_lead ON ct.leaderId = u_lead.id
+    `);
+
+    const crypto = require("crypto");
+    const defaultPassword = await bcrypt.hash("Stockology@2026", 10);
+    let syncedActive = 0;
+    let syncedInactive = 0;
+
+    for (const m of members) {
+      if (!m.email) continue;
+      const isActive = m.memberStatus === "ACTIVE" ? 1 : 0;
+      if (isActive) syncedActive++;
+      else syncedInactive++;
+
+      const deptDisplay = m.departmentName ? (m.departmentHead ? `${m.departmentName} (Head: ${m.departmentHead})` : m.departmentName) : "General";
+      const teamDisplay = m.teamName ? (m.teamLeader ? `${m.teamName} (Lead: ${m.teamLeader})` : m.teamName) : "No Team";
+
+      const meta = {
+        crmUserId: m.crmUserId,
+        departmentId: m.departmentId || null,
+        departmentName: m.departmentName || null,
+        departmentHead: m.departmentHead || null,
+        teamId: m.teamId || null,
+        teamName: m.teamName || null,
+        teamLeader: m.teamLeader || null,
+        role: m.memberRole || "MEMBER",
+        status: m.memberStatus || "ACTIVE",
+      };
+
+      const readableComment = `🏢 ${deptDisplay} | 👥 ${teamDisplay} | ${m.memberRole} | ${m.memberStatus} -- ${JSON.stringify(meta)}`;
+
+      const [existing] = await rootPool.query("SELECT id FROM agents WHERE email = ?", [m.email]);
+      if (existing && existing.length > 0) {
+        await rootPool.query(
+          "UPDATE agents SET owner_uid = ?, name = ?, mobile = ?, is_active = ?, comments = ? WHERE id = ?",
+          [masterUid, m.name || "Agent", m.phone || "", isActive, readableComment, existing[0].id]
+        );
+      } else {
+        const agentUid = crypto.randomBytes(16).toString("hex");
+        await rootPool.query(
+          "INSERT INTO agents (owner_uid, uid, role, email, password, name, mobile, comments, is_active, allow_send_new_qr, mask_number, createdAt) VALUES (?, ?, \x27agent\x27, ?, ?, ?, ?, ?, ?, 0, 1, NOW())",
+          [masterUid, agentUid, m.email, defaultPassword, m.name || "Agent", m.phone || "", readableComment, isActive]
+        );
+      }
+    }
+
+    res.json({
+      success: true,
+      message: `Successfully synced ${members.length} CRM users under sstockology@gmail.com (${syncedActive} Active, ${syncedInactive} Inactive)!`,
+      totalMembers: members.length,
+      syncedActive,
+      syncedInactive,
+    });
+  } catch (err) {
+    console.error("Error in sync-crm-users:", err);
+    res.status(500).json({ success: false, error: err.message });
+  } finally {
+    if (rootPool) {
+      try { await rootPool.end(); } catch (_) {}
+    }
+  }
+});
+
 module.exports = router;
