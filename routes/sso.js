@@ -269,6 +269,11 @@ router.post("/auth", async (req, res) => {
         }
       }
 
+      // Keep scopedUserIds compact to prevent socket.io query string / header HTTP 400 Bad Request
+      const compactAgentScopedIds = (Array.isArray(scopedUserIds) && dataScope !== "COMPANY")
+        ? scopedUserIds.slice(0, 15)
+        : [];
+
       const token = sign(
         {
           uid: agent.uid,
@@ -280,7 +285,7 @@ router.post("/auth", async (req, res) => {
           dataScope: dataScope || "SELF",
           departmentId: departmentId || null,
           teamId: teamId || null,
-          scopedUserIds: Array.isArray(scopedUserIds) ? scopedUserIds : [],
+          scopedUserIds: compactAgentScopedIds,
         },
         process.env.JWTKEY,
         {}
@@ -321,6 +326,11 @@ router.post("/auth", async (req, res) => {
       }
     }
 
+    // Keep scopedUserIds compact to prevent socket.io query string / header HTTP 400 Bad Request
+    const compactUserScopedIds = (Array.isArray(scopedUserIds) && dataScope !== "COMPANY")
+      ? scopedUserIds.slice(0, 15)
+      : [];
+
     const token = sign(
       {
         uid: user.uid,
@@ -331,7 +341,7 @@ router.post("/auth", async (req, res) => {
         dataScope: dataScope || "COMPANY",
         departmentId: departmentId || null,
         teamId: teamId || null,
-        scopedUserIds: Array.isArray(scopedUserIds) ? scopedUserIds : [],
+        scopedUserIds: compactUserScopedIds,
       },
       process.env.JWTKEY,
       { expiresIn: "7d" }
