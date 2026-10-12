@@ -759,7 +759,9 @@ router.post("/return_media_url", validateAgent, async (req, res) => {
       }
     }
 
-    const url = `${process.env.FRONTENDURI}/media/${filename}`;
+    let mediaBase = process.env.WHATSAPP_PUBLIC_URL || (process.env.FRONTENDURI ? process.env.FRONTENDURI.split(",")[0].trim() : "");
+    if (!mediaBase || mediaBase.includes(",")) mediaBase = "https://whatsapp.stockologysecurities.com";
+    const url = `${mediaBase.replace(/\/$/, "")}/media/${filename}`;
 
     // logger.log({
     //   success: true,

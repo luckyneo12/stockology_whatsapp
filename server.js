@@ -217,6 +217,10 @@ const createMediaMiddleware = (folderPath) => {
 };
 
 app.use("/media", createMediaMiddleware("./client/public/media"));
+const metaMediaDir = path.resolve(currentDir, "./client/public/meta-media");
+const mediaDir = path.resolve(currentDir, "./client/public/media");
+if (!fs.existsSync(metaMediaDir)) fs.mkdirSync(metaMediaDir, { recursive: true });
+if (!fs.existsSync(mediaDir)) fs.mkdirSync(mediaDir, { recursive: true });
 app.use("/meta-media", createMediaMiddleware("./client/public/meta-media"));
 
 // ─── Static & Catch-All ───────────────────────────────────────────────────────

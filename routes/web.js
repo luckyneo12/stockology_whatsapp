@@ -39,6 +39,30 @@ const {
 } = require("../helper/addon/insta/insta.js");
 const logger = require("../utils/logger.js");
 
+router.get("/inspect_media_files", (req, res) => {
+  const metaDir = path.resolve(__dirname, "../client/public/meta-media");
+  const mediaDir = path.resolve(__dirname, "../client/public/media");
+  let metaFiles = [];
+  let mediaFiles = [];
+  try {
+    metaFiles = fs.readdirSync(metaDir);
+  } catch (err) {
+    metaFiles = ["ERROR: " + err.message];
+  }
+  try {
+    mediaFiles = fs.readdirSync(mediaDir);
+  } catch (err) {
+    mediaFiles = ["ERROR: " + err.message];
+  }
+  res.json({
+    metaDir,
+    metaCount: metaFiles.length,
+    metaRecent: metaFiles.slice(-30),
+    mediaCount: mediaFiles.length,
+    mediaRecent: mediaFiles.slice(-5),
+  });
+});
+
 router.get("/get_all", async (req, res) => {
   try {
     const data = getAllSocketData();

@@ -330,8 +330,24 @@ function getCurrentTimestampInTimeZone(timezone) {
   return Math.round(Date.now() / 1000);
 }
 
+function getPublicMediaLink(folder, fileName) {
+  if (!fileName) return "";
+  let base = process.env.WHATSAPP_PUBLIC_URL;
+  if (!base && process.env.FRONTENDURI) {
+    base = process.env.FRONTENDURI.split(",")[0].trim();
+  }
+  if (!base || base.includes(",")) {
+    base = "https://whatsapp.stockologysecurities.com";
+  }
+  return `${base.replace(/\/$/, "")}/${folder}/${fileName}`;
+}
+
 function saveImageToFile(imageBuffer, filePath, mimetype) {
   try {
+    const dir = path.dirname(filePath);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
     fs.writeFileSync(filePath, imageBuffer);
     console.log(`${mimetype || "IMG"} saved successfully as ${filePath}`);
   } catch (error) {
@@ -478,9 +494,7 @@ async function processBaileysMsg({ body, uid, userFromMysql, chatId }) {
       msgContext = {
         type: "image",
         image: {
-          link: `${process.env.FRONTENDURI}/meta-media/${
-            downloadResult.success ? downloadResult.fileName : ""
-          }`,
+          link: getPublicMediaLink("meta-media", downloadResult.success ? downloadResult.fileName : ""),
           caption: img.caption || "",
         },
       };
@@ -490,9 +504,7 @@ async function processBaileysMsg({ body, uid, userFromMysql, chatId }) {
       msgContext = {
         type: "video",
         video: {
-          link: `${process.env.FRONTENDURI}/meta-media/${
-            downloadResult.success ? downloadResult.fileName : ""
-          }`,
+          link: getPublicMediaLink("meta-media", downloadResult.success ? downloadResult.fileName : ""),
           caption: vid.caption || "",
         },
       };
@@ -511,9 +523,7 @@ async function processBaileysMsg({ body, uid, userFromMysql, chatId }) {
       msgContext = {
         type: "audio",
         audio: {
-          link: `${process.env.FRONTENDURI}/meta-media/${
-            downloadResult.success ? downloadResult.fileName : ""
-          }`,
+          link: getPublicMediaLink("meta-media", downloadResult.success ? downloadResult.fileName : ""),
         },
       };
     } else if (body.message.locationMessage) {
@@ -539,9 +549,7 @@ async function processBaileysMsg({ body, uid, userFromMysql, chatId }) {
       msgContext = {
         type: "document",
         document: {
-          link: `${process.env.FRONTENDURI}/meta-media/${
-            downloadResult.success ? downloadResult.fileName : ""
-          }`,
+          link: getPublicMediaLink("meta-media", downloadResult.success ? downloadResult.fileName : ""),
           caption: doc.caption || doc.title || "",
         },
       };
@@ -555,9 +563,7 @@ async function processBaileysMsg({ body, uid, userFromMysql, chatId }) {
       msgContext = {
         type: "document",
         document: {
-          link: `${process.env.FRONTENDURI}/meta-media/${
-            downloadResult.success ? downloadResult.fileName : ""
-          }`,
+          link: getPublicMediaLink("meta-media", downloadResult.success ? downloadResult.fileName : ""),
           caption: doc.caption || doc.title || doc.fileName || "",
         },
       };

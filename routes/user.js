@@ -577,7 +577,9 @@ router.post("/return_media_url", validateUser, async (req, res) => {
       }
     }
 
-    const url = `${process.env.FRONTENDURI}/media/${filename}`;
+    let mediaBase = process.env.WHATSAPP_PUBLIC_URL || (process.env.FRONTENDURI ? process.env.FRONTENDURI.split(",")[0].trim() : "");
+    if (!mediaBase || mediaBase.includes(",")) mediaBase = "https://whatsapp.stockologysecurities.com";
+    const url = `${mediaBase.replace(/\/$/, "")}/media/${filename}`;
 
     res.json({
       success: true,
@@ -1281,7 +1283,9 @@ router.post("/return_media_url_meta", validateUser, async (req, res) => {
         return res.json({ success: false, msg: "Please check your meta API" });
       }
 
-      const url = `${process.env.FRONTENDURI}/media/${filename}`;
+      let mediaBase = process.env.WHATSAPP_PUBLIC_URL || (process.env.FRONTENDURI ? process.env.FRONTENDURI.split(",")[0].trim() : "");
+    if (!mediaBase || mediaBase.includes(",")) mediaBase = "https://whatsapp.stockologysecurities.com";
+    const url = `${mediaBase.replace(/\/$/, "")}/media/${filename}`;
 
       await query(
         `INSERT INTO meta_templet_media (uid, templet_name, meta_hash, file_name) VALUES (?,?,?,?)`,

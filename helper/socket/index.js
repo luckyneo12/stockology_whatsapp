@@ -676,11 +676,31 @@ function processSocketEvent({
             [...conversationParams, msgLimit, msgOffset],
           );
 
-          const parsedChatList = conversationData.map((row) => ({
-            ...row,
-            msgContext: row.msgContext ? JSON.parse(row.msgContext) : null,
-            context: row.context ? JSON.parse(row.context) : null,
-          }));
+          const parsedChatList = conversationData.map((row) => {
+            let msgContext = null;
+            try {
+              msgContext = row.msgContext ? JSON.parse(row.msgContext) : null;
+            } catch (e) {
+              msgContext = null;
+            }
+            if (msgContext) {
+              for (const mediaKey of ["image", "video", "audio", "document"]) {
+                if (msgContext[mediaKey]?.link) {
+                  let link = msgContext[mediaKey].link;
+                  if (link.includes(",") || link.includes("crm.stockologysecurities.com") || link.includes("uatcrm.stockologysecurities.com") || link.includes("localhost:")) {
+                    const fileName = link.split("/").pop();
+                    const subfolder = link.includes("/media/") ? "media" : "meta-media";
+                    msgContext[mediaKey].link = `https://whatsapp.stockologysecurities.com/${subfolder}/${fileName}`;
+                  }
+                }
+              }
+            }
+            return {
+              ...row,
+              msgContext,
+              context: row.context ? JSON.parse(row.context) : null,
+            };
+          });
 
           const labelAdded = await query(
             `SELECT * FROM chat_tags WHERE uid = ?`,
