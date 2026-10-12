@@ -98,7 +98,9 @@ const validateUserOrAgent = async (req, res, next) => {
       }
 
       req.decode = {
+        ...decode,
         uid: getUser[0].uid,
+        owner_uid: decode.owner_uid || getUser[0].uid,
         role: "user",
         email: getUser[0].email,
         tokenVersion: getUser[0].tokenVersion || 0,

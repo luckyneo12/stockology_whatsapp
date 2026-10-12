@@ -89,6 +89,7 @@ function initializeSocket(server) {
         ...userData,
         socketId: socket.id,
         isAgent,
+        owner_uid: socket.decodedToken.owner_uid || (isAgent ? userData.owner_uid : userData.uid),
         connectedAt: new Date(),
       };
 
@@ -152,6 +153,7 @@ function sendToUid(uid, data, event = "message") {
     if (
       socket.userData &&
       (socket.userData.uid === uid ||
+        socket.userData.owner_uid === uid ||
         (socket.userData.isAgent && socket.userData.owner_uid === uid))
     ) {
       socket.emit(event, data);

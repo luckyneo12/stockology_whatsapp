@@ -93,7 +93,6 @@ function processSocketEvent({
           }
 
           // ── Scope-aware chat filtering (SELF, TEAM, DEPARTMENT, COMPANY) ──
-          const ownerUid = isAgent ? socket?.userData?.owner_uid : uid;
           conditions.push(`uid = ?`);
           queryParams.push(ownerUid);
 
@@ -106,8 +105,8 @@ function processSocketEvent({
           const scopedUserIds = socket?.decodedToken?.scopedUserIds || [];
           const agentId = socket?.userData?.id;
           const agentUid = socket?.userData?.uid;
-          const isLeader = agentMeta?.role === "MANAGER" || agentMeta?.role === "LEADER" || socket?.decodedToken?.isLeader;
-          const isDeptHead = agentMeta?.role === "MANAGER" || socket?.decodedToken?.isDeptHead;
+          const isLeader = Boolean(agentMeta?.role === "MANAGER" || agentMeta?.role === "LEADER" || socket?.decodedToken?.isLeader);
+          const isDeptHead = Boolean(agentMeta?.role === "MANAGER" || socket?.decodedToken?.isDeptHead);
 
           // Master account always COMPANY scope
           if (!isAgent && socket?.userData?.email === "sstockology@gmail.com") {
@@ -369,7 +368,7 @@ function processSocketEvent({
           );
 
           const contacts = await query(`SELECT * FROM contact WHERE uid = ?`, [
-            isAgent ? socket?.userData?.owner_uid : uid,
+            ownerUid,
           ]);
 
           // Normalize mobile format and enrich from CRM Leads
@@ -459,7 +458,7 @@ function processSocketEvent({
             format = "json", // "json" | "csv"
           } = payload;
 
-          const ownerUid = isAgent ? socket?.userData?.owner_uid : uid;
+          // ownerUid already in scope
 
           let chats;
           if (chatIds.length > 0) {
@@ -559,7 +558,7 @@ function processSocketEvent({
             });
           }
 
-          const ownerUid = isAgent ? socket?.userData?.owner_uid : uid;
+          // ownerUid already in scope
 
           const [chatRow] = await query(
             `SELECT * FROM beta_chats WHERE chat_id = ? AND uid = ?`,
@@ -651,7 +650,7 @@ function processSocketEvent({
           let conversationQueryStr = `FROM beta_conversation WHERE chat_id = ? AND uid = ?`;
           const conversationParams = [
             chat.chat_id,
-            isAgent ? socket?.userData?.owner_uid : uid,
+            ownerUid,
           ];
 
           // Add search filter if provided
@@ -712,7 +711,7 @@ function processSocketEvent({
 
           const labelAdded = await query(
             `SELECT * FROM chat_tags WHERE uid = ?`,
-            [isAgent ? socket?.userData?.owner_uid : uid],
+            [ownerUid],
           );
 
           let [updatedChat] = await query(
@@ -730,7 +729,7 @@ function processSocketEvent({
           const [getContact] = await query(
             `SELECT * FROM contact WHERE uid = ? AND (mobile = ? OR mobile LIKE ?) LIMIT 1`,
             [
-              isAgent ? socket?.userData?.owner_uid : uid,
+              ownerUid,
               updatedChat?.sender_mobile,
               "%" + last10,
             ],
@@ -761,7 +760,7 @@ function processSocketEvent({
 
           const phonebookData = await query(
             `SELECT * FROM phonebook WHERE uid = ?`,
-            [isAgent ? socket?.userData?.owner_uid : uid],
+            [ownerUid],
           );
 
           updatedChat = { ...updatedChat, contactData };
@@ -777,7 +776,7 @@ function processSocketEvent({
 
           const chatBots = await query(
             `SELECT * FROM beta_chatbot WHERE uid = ? AND active = ? AND source = ?`,
-            [isAgent ? socket?.userData?.owner_uid : uid, 1, "wa_chatbot"],
+            [ownerUid, 1, "wa_chatbot"],
           );
 
           const [lastSenderMsg] = await query(
@@ -789,7 +788,7 @@ function processSocketEvent({
             [
               chat.chat_id,
               "INCOMING",
-              isAgent ? socket?.userData?.owner_uid : uid,
+              ownerUid,
             ],
           );
 
@@ -978,7 +977,7 @@ function processSocketEvent({
             const { email: userEmail, name: userName } = socket?.userData;
 
             const [user] = await query(`SELECT * FROM user WHERE uid = ?`, [
-              isAgent ? socket?.userData?.owner_uid : uid,
+              ownerUid,
             ]);
 
             const userTimezone = getCurrentTimestampInTimeZone(
@@ -1031,7 +1030,7 @@ function processSocketEvent({
           }
 
           const [user] = await query(`SELECT * FROM user WHERE uid = ?`, [
-            isAgent ? socket?.userData?.owner_uid : uid,
+            ownerUid,
           ]);
 
           const userTimezone = getCurrentTimestampInTimeZone(
@@ -1052,14 +1051,14 @@ function processSocketEvent({
             sendMsg = await sendQrMsg({
               msgObj: msgCon,
               to: senderMobile,
-              uid: isAgent ? socket?.userData?.owner_uid : uid,
+              uid: ownerUid,
               chatInfo,
             });
           } else if (chatInfo?.origin === "instagram") {
             sendMsg = await sendInstaMsg({
               msgObj: msgCon,
               to: senderMobile, // this is the other person's IGSID
-              uid: isAgent ? socket?.userData?.owner_uid : uid,
+              uid: ownerUid,
               chatInfo,
             });
           } else if (chatInfo?.origin === "instagram_comment") {
@@ -1067,27 +1066,27 @@ function processSocketEvent({
             sendMsg = await sendInstaMsg({
               msgObj: msgCon,
               to: senderMobile, // strip suffix → raw IGSID
-              uid: isAgent ? socket?.userData?.owner_uid : uid,
+              uid: ownerUid,
               chatInfo, // has origin_instance_id as JSON object now
             });
           } else if (chatInfo?.origin === "messenger") {
             sendMsg = await sendMessengerMsg({
               msgObj: msgCon,
               to: senderMobile,
-              uid: isAgent ? socket?.userData?.owner_uid : uid,
+              uid: ownerUid,
               chatInfo,
             });
           } else if (chatInfo?.origin === "meta") {
             sendMsg = await sendMetaMsg({
               msgObj: msgCon,
               to: senderMobile,
-              uid: isAgent ? socket?.userData?.owner_uid : uid,
+              uid: ownerUid,
             });
           } else if (chatInfo?.origin === "telegram") {
             sendMsg = await sendMessageTelegram({
               msgObj: msgCon,
               to: senderMobile,
-              uid: isAgent ? socket?.userData?.owner_uid : uid,
+              uid: ownerUid,
               chatInfo,
             });
           }
@@ -1122,7 +1121,7 @@ function processSocketEvent({
             };
 
             await saveMessageToConversation({
-              uid: isAgent ? socket?.userData?.owner_uid : uid,
+              uid: ownerUid,
               chatId: chatInfo.chat_id,
               messageData,
             });
@@ -1132,7 +1131,7 @@ function processSocketEvent({
               [
                 JSON.stringify(messageData),
                 chatInfo.chat_id,
-                isAgent ? socket?.userData?.owner_uid : uid,
+                ownerUid,
               ],
             );
 
@@ -1157,7 +1156,7 @@ function processSocketEvent({
           }
 
           const [tplUser] = await query(`SELECT * FROM user WHERE uid = ?`, [
-            isAgent ? socket?.userData?.owner_uid : uid,
+            ownerUid,
           ]);
 
           const tplTimestamp = getCurrentTimestampInTimeZone(
@@ -1187,7 +1186,7 @@ function processSocketEvent({
           };
 
           await saveMessageToConversation({
-            uid: isAgent ? socket?.userData?.owner_uid : uid,
+            uid: ownerUid,
             chatId: tplChatInfo.chat_id,
             messageData: templateMsgData,
           });
@@ -1197,7 +1196,7 @@ function processSocketEvent({
             [
               JSON.stringify(templateMsgData),
               tplChatInfo.chat_id,
-              isAgent ? socket?.userData?.owner_uid : uid,
+              ownerUid,
             ],
           );
 
@@ -1215,7 +1214,7 @@ function processSocketEvent({
             uid,
             socket,
             agent: isAgent,
-            ownerUid: isAgent ? socket?.userData?.owner_uid : uid,
+            ownerUid: ownerUid,
           });
           break;
 
@@ -1225,7 +1224,7 @@ function processSocketEvent({
           // Get current chat data
           const [chatDataoo] = await query(
             `SELECT assigned_agent FROM beta_chats WHERE chat_id = ? AND uid = ?`,
-            [cId, isAgent ? socket?.userData?.owner_uid : uid],
+            [cId, ownerUid],
           );
 
           let currentAgentss = [];
@@ -1258,7 +1257,7 @@ function processSocketEvent({
             [
               JSON.stringify(updatedAgents),
               cId,
-              isAgent ? socket?.userData?.owner_uid : uid,
+              ownerUid,
             ],
           );
 
@@ -1271,7 +1270,7 @@ function processSocketEvent({
           // Get current chat data
           const [chatDatao] = await query(
             `SELECT assigned_agent FROM beta_chats WHERE chat_id = ? AND uid = ?`,
-            [chatId, uid],
+            [chatId, ownerUid],
           );
 
           let currentAgents = [];
@@ -1297,7 +1296,7 @@ function processSocketEvent({
               `UPDATE beta_chats
                   SET assigned_agent = ?
                   WHERE chat_id = ? AND uid = ?`,
-              [JSON.stringify(updatedAgents), chatId, uid],
+              [JSON.stringify(updatedAgents), chatId, ownerUid],
             );
           } else {
             if (chatId && agentUid) {
@@ -1310,7 +1309,7 @@ function processSocketEvent({
                 // Get agent data
                 const [agentData] = await query(
                   `SELECT * FROM agents WHERE uid = ? AND owner_uid = ?`,
-                  [agentUid, uid],
+                  [agentUid, ownerUid],
                 );
 
                 if (agentData) {
@@ -1344,13 +1343,13 @@ function processSocketEvent({
           }
 
           const chatid = `${instance?.number}_${normalizedNumber}_${
-            isAgent ? socket?.userData?.owner_uid : uid
+            ownerUid
           }`;
 
           // checking if chat already existed
           const [checkChat] = await query(
             `SELECT * FROM beta_chats WHERE chat_id = ? AND uid = ?`,
-            [chatid, isAgent ? socket?.userData?.owner_uid : uid],
+            [chatid, ownerUid],
           );
           if (checkChat) {
             return socket.emit("error", {
@@ -1403,7 +1402,7 @@ function processSocketEvent({
             };
 
             await saveMessageToConversation({
-              uid: isAgent ? socket?.userData?.owner_uid : uid,
+              uid: ownerUid,
               chatId: chatid,
               messageData,
             });
@@ -1415,7 +1414,7 @@ function processSocketEvent({
             await query(
               `INSERT INTO beta_chats (uid, origin_instance_id, chat_id, last_message, sender_mobile, origin, assigned_agent) VALUES (?,?,?,?,?,?,?)`,
               [
-                isAgent ? socket?.userData?.owner_uid : uid,
+                ownerUid,
                 JSON.stringify(originInstanceId),
                 chatid,
                 JSON.stringify(messageData),
@@ -1450,7 +1449,7 @@ function processSocketEvent({
             });
           }
 
-          const ownerUid = isAgent ? socket?.userData?.owner_uid : uid;
+          // ownerUid already in scope
 
           // 1. Get meta API keys
           const [metaApi] = await query(
@@ -1613,17 +1612,17 @@ function processSocketEvent({
           if (delChatId && deleteType) {
             await query(
               `DELETE FROM beta_chats WHERE chat_id = ? AND uid = ?`,
-              [delChatId, isAgent ? socket?.userData?.owner_uid : uid],
+              [delChatId, ownerUid],
             );
             const metaMediaFolder = `${__dirname}/../../client/public/meta-media`;
             const conversationData = await query(
               `SELECT * FROM beta_conversation WHERE chat_id = ? AND uid = ?`,
-              [delChatId, isAgent ? socket?.userData?.owner_uid : uid],
+              [delChatId, ownerUid],
             );
             await deleteMediaFromConversation({
               mediaFolderPath: metaMediaFolder,
               type: deleteType,
-              uid: isAgent ? socket?.userData?.owner_uid : uid,
+              uid: ownerUid,
               chatId: delChatId,
               conversationData,
             });
@@ -1631,7 +1630,7 @@ function processSocketEvent({
             if (deleteType === "delete") {
               await query(
                 `DELETE FROM beta_chats WHERE chat_id = ? AND uid = ?`,
-                [delChatId, isAgent ? socket?.userData?.owner_uid : uid],
+                [delChatId, ownerUid],
               );
             }
 
@@ -1659,7 +1658,7 @@ function processSocketEvent({
 
           const checkExisted = await query(
             `SELECT * FROM contact WHERE uid = ? AND mobile = ?`,
-            [isAgent ? socket?.userData?.owner_uid : uid, Number(conMob)],
+            [ownerUid, Number(conMob)],
           );
 
           if (checkExisted?.length > 0) {
@@ -1675,7 +1674,7 @@ function processSocketEvent({
           await query(
             `INSERT INTO contact (uid, phonebook_id, phonebook_name, name, mobile, var1, var2, var3, var4, var5) VALUES (?,?,?,?,?,?,?,?,?,?)`,
             [
-              isAgent ? socket?.userData?.owner_uid : uid,
+              ownerUid,
               phonebookDataa?.id,
               phonebookDataa?.name,
               conName,
@@ -1808,7 +1807,7 @@ function processSocketEvent({
             // Get recent messages for context
             const recentMessages = await getRecentMessages(
               chatIddd,
-              isAgent ? socket?.userData?.owner_uid : uid,
+              ownerUid,
               5,
             );
 

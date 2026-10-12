@@ -193,9 +193,53 @@ router.get("/get_all_agent", validateAgent, async (req, res) => {
 router.get("/get_all", validateUser, async (req, res) => {
   try {
     const { active } = req.query;
-    const instances = await query(`SELECT * FROM instance WHERE uid = ?`, [
-      req.decode.uid,
-    ]);
+    const ownerUid = req.decode.owner_uid || req.decode.uid;
+    const isCompanyScope =
+      req.decode.dataScope === "COMPANY" ||
+      req.decode.email === "sstockology@gmail.com" ||
+      ownerUid === req.decode.uid;
+
+    let instances = [];
+    if (isCompanyScope) {
+      instances = await query(`SELECT * FROM instance WHERE uid = ? OR uid = ?`, [
+        ownerUid,
+        req.decode.uid,
+      ]);
+    } else {
+      const teamId = req.decode.teamId;
+      const deptId = req.decode.departmentId;
+      const crmUserId = req.decode.crmUserId;
+      const isLeader = req.decode.isLeader;
+      const isDeptHead = req.decode.isDeptHead;
+
+      let scopeConds = [];
+      let params = [ownerUid, req.decode.uid];
+
+      if (teamId) {
+        scopeConds.push(`other LIKE ?`);
+        params.push(`%"teamId":"${teamId}"%`);
+      }
+      if (deptId && isDeptHead) {
+        scopeConds.push(`other LIKE ?`);
+        params.push(`%"departmentId":"${deptId}"%`);
+      }
+      if (crmUserId) {
+        scopeConds.push(`other LIKE ?`);
+        params.push(`%"assignedUserId":"${crmUserId}"%`);
+      }
+
+      if (scopeConds.length > 0) {
+        instances = await query(
+          `SELECT * FROM instance WHERE (uid = ? OR uid = ?) AND (${scopeConds.join(" OR ")})`,
+          params
+        );
+      } else {
+        instances = await query(`SELECT * FROM instance WHERE uid = ? OR uid = ?`, [
+          ownerUid,
+          req.decode.uid,
+        ]);
+      }
+    }
 
     if (!instances.length) {
       return res.json({
@@ -641,9 +685,10 @@ router.get("/get_contacts", validateUser, async (req, res) => {
     if (!uniqueId)
       return res.json({ success: false, msg: "uniqueId required" });
 
+    const ownerUid = req.decode.owner_uid || req.decode.uid;
     const [instance] = await query(
-      `SELECT * FROM instance WHERE uniqueId = ? AND uid = ?`,
-      [uniqueId, req.decode.uid],
+      `SELECT * FROM instance WHERE uniqueId = ? AND (uid = ? OR uid = ?)`,
+      [uniqueId, ownerUid, req.decode.uid],
     );
     if (!instance)
       return res.json({ success: false, msg: "Instance not found" });
@@ -652,8 +697,8 @@ router.get("/get_contacts", validateUser, async (req, res) => {
     const limitNum = Math.min(500, parseInt(limit) || 100);
     const offset = (pageNum - 1) * limitNum;
 
-    let whereClauses = ["uid = ?", "uniqueId = ?"];
-    let params = [req.decode.uid, uniqueId];
+    let whereClauses = ["(uid = ? OR uid = ?)", "uniqueId = ?"];
+    let params = [ownerUid, req.decode.uid, uniqueId];
 
     if (search.trim()) {
       whereClauses.push("(name LIKE ? OR mobile LIKE ?)");

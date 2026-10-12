@@ -162,7 +162,7 @@ router.delete("/plans/:id", async (req, res) => {
 // POST /api/sso/auth - Unified SSO session creator
 router.post("/auth", async (req, res) => {
   try {
-    const { email, name, role, secret, parentEmail, parentName, planTitle, planId, crmUserId, dataScope, departmentId, teamId, scopedUserIds } = req.body;
+    const { email, name, role, secret, parentEmail, parentName, planTitle, planId, crmUserId, dataScope, departmentId, teamId, scopedUserIds, isLeader, isDeptHead } = req.body;
 
     const expectedSecret = process.env.SSO_SECRET || process.env.JWTKEY;
     if (!secret || secret !== expectedSecret) {
@@ -326,6 +326,21 @@ router.post("/auth", async (req, res) => {
       }
     }
 
+    // Resolve Company Owner UID for non-root users
+    let ownerUid = user.uid;
+    if (parentEmail && parentEmail !== email) {
+      const parentUser = await query("SELECT uid FROM user WHERE email = ?", [parentEmail]);
+      if (parentUser.length > 0) {
+        ownerUid = parentUser[0].uid;
+      }
+    }
+    if (!ownerUid || (ownerUid === user.uid && email !== "sstockology@gmail.com")) {
+      const masterUser = await query("SELECT uid FROM user WHERE email = 'sstockology@gmail.com' LIMIT 1");
+      if (masterUser.length > 0) {
+        ownerUid = masterUser[0].uid;
+      }
+    }
+
     // Keep scopedUserIds compact to prevent socket.io query string / header HTTP 400 Bad Request
     const compactUserScopedIds = (Array.isArray(scopedUserIds) && dataScope !== "COMPANY")
       ? scopedUserIds.slice(0, 15)
@@ -334,14 +349,17 @@ router.post("/auth", async (req, res) => {
     const token = sign(
       {
         uid: user.uid,
+        owner_uid: ownerUid,
         role: "user",
         tokenVersion: user.tokenVersion || 0,
         email: user.email,
         crmUserId: crmUserId || null,
-        dataScope: dataScope || "COMPANY",
+        dataScope: dataScope || (ownerUid === user.uid ? "COMPANY" : "TEAM"),
         departmentId: departmentId || null,
         teamId: teamId || null,
         scopedUserIds: compactUserScopedIds,
+        isLeader: Boolean(isLeader),
+        isDeptHead: Boolean(isDeptHead),
       },
       process.env.JWTKEY,
       { expiresIn: "7d" }
@@ -352,6 +370,7 @@ router.post("/auth", async (req, res) => {
       token,
       role: "user",
       uid: user.uid,
+      owner_uid: ownerUid,
       redirect: "/user"
     });
   } catch (err) {

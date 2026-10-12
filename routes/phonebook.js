@@ -58,7 +58,9 @@ router.post(
 // get by uid
 router.get("/get_by_uid", validateUser, async (req, res) => {
   try {
-    let data = await query(`SELECT * FROM phonebook WHERE uid = ?`, [
+    const ownerUid = req.decode.owner_uid || req.decode.uid;
+    let data = await query(`SELECT * FROM phonebook WHERE uid = ? OR uid = ?`, [
+      ownerUid,
       req.decode.uid,
     ]);
 
