@@ -334,8 +334,8 @@ router.post("/auth", async (req, res) => {
         ownerUid = parentUser[0].uid;
       }
     }
-    if (!ownerUid || (ownerUid === user.uid && email !== "sstockology@gmail.com")) {
-      const masterUser = await query("SELECT uid FROM user WHERE email = 'sstockology@gmail.com' LIMIT 1");
+    if (!ownerUid || (ownerUid === user.uid && dataScope !== "COMPANY")) {
+      const masterUser = await query("SELECT uid FROM user ORDER BY id ASC LIMIT 1");
       if (masterUser.length > 0) {
         ownerUid = masterUser[0].uid;
       }

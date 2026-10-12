@@ -196,7 +196,6 @@ router.get("/get_all", validateUser, async (req, res) => {
     const ownerUid = req.decode.owner_uid || req.decode.uid;
     const isCompanyScope =
       req.decode.dataScope === "COMPANY" ||
-      req.decode.email === "sstockology@gmail.com" ||
       ownerUid === req.decode.uid;
 
     let instances = [];
