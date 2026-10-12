@@ -1860,8 +1860,8 @@ router.get("/get_dashboard", validateUser, async (req, res) => {
     // 1. User Profile Data
     const user = await query("SELECT * FROM user WHERE uid = ?", [uid]);
 
-    // 2. Statistics
-    const [agents, activeChats, completedTasks, activeInstances] =
+    // 2. Statistics (Team Users vs AI Chatbot Agents)
+    const [agents, activeChats, aiChatbots, activeInstances] =
       await Promise.all([
         query("SELECT COUNT(*) as count FROM agents WHERE owner_uid = ?", [
           uid,
@@ -1871,7 +1871,7 @@ router.get("/get_dashboard", validateUser, async (req, res) => {
           [uid],
         ),
         query(
-          "SELECT COUNT(*) as count FROM agent_task WHERE owner_uid = ? AND status = 'COMPLETED'",
+          "SELECT COUNT(*) as count FROM beta_chatbot WHERE uid = ? AND active = 1",
           [uid],
         ),
         query(
@@ -1917,7 +1917,7 @@ router.get("/get_dashboard", validateUser, async (req, res) => {
       stats: {
         agents: agents[0].count,
         activeChats: activeChats[0].count,
-        completedTasks: completedTasks[0].count,
+        completedTasks: aiChatbots[0]?.count || 0,
         activeInstances: activeInstances[0].count,
       },
       recentConversations,
