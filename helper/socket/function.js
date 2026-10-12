@@ -9,17 +9,45 @@ const https = require("https");
 const httpsAgent = new https.Agent({ keepAlive: false });
 
 function mergeArraysWithPhonebook(chatArray, phonebookArray) {
-  // Iterate through the chat array and enrich with phonebook data
+  const pbList = Array.isArray(phonebookArray) ? phonebookArray : [];
   return chatArray.map((chat) => {
-    // Find matching phonebook entry where sender_mobile matches mobile
-    const phonebookEntry = phonebookArray.find(
-      (phonebook) => phonebook.mobile === chat.sender_mobile,
+    const rawChatMobile = String(chat?.sender_mobile || "").trim();
+    const chatDigits = rawChatMobile.replace(/\D/g, "");
+    const chatLast10 = chatDigits.length >= 10 ? chatDigits.slice(-10) : chatDigits;
+
+    // Find matching phonebook entry where mobile matches (exact or last 10 digits)
+    const phonebookEntry = pbList.find((pb) => {
+      if (!pb || !pb.mobile) return false;
+      const rawPbMobile = String(pb.mobile || "").trim();
+      if (rawPbMobile === rawChatMobile) return true;
+      const pbDigits = rawPbMobile.replace(/\D/g, "");
+      const pbLast10 = pbDigits.length >= 10 ? pbDigits.slice(-10) : pbDigits;
+      return Boolean(chatLast10 && pbLast10 && chatLast10 === pbLast10);
+    });
+
+    const savedName = phonebookEntry?.name ? String(phonebookEntry.name).trim() : "";
+    const waName = chat?.sender_name ? String(chat.sender_name).trim() : "";
+    const isWaNameValid = Boolean(
+      waName &&
+      waName !== "NA" &&
+      waName !== chat?.sender_mobile &&
+      !/^\+?\d{7,15}$/.test(waName.replace(/\s+/g, ""))
     );
 
-    // Add phonebook data if a match is found
+    let resolvedPhonebook = null;
+
+    if (savedName && savedName !== "NA") {
+      // Priority 1: Contact is saved in user device / CRM / phonebook
+      chat.sender_name = savedName;
+      resolvedPhonebook = phonebookEntry;
+    } else if (isWaNameValid) {
+      // Priority 2: Not saved in device -> take user name from WhatsApp (pushName)
+      resolvedPhonebook = { ...phonebookEntry, name: waName, isWhatsappProfile: true };
+    }
+
     return {
       ...chat,
-      phonebook: phonebookEntry || null, // Add phonebook data or null if no match
+      phonebook: resolvedPhonebook,
     };
   });
 }

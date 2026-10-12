@@ -234,18 +234,28 @@ async function updateChatInMysql({
     }
 
     let sender_name = senderName || "NA";
-    // Check if CRM lead has a real name
+    // Check if Contact or CRM lead has a saved name
     try {
       const crmDb = process.env.CRM_DB_NAME || "stockology_db_backup";
       const digits = String(sender_mobile).replace(/\D/g, "");
       const last10 = digits.length >= 10 ? digits.slice(-10) : digits;
       if (last10 && last10.length >= 7) {
-        const [crmLead] = await query(
-          "SELECT name FROM " + crmDb + ".crm_leads WHERE phone LIKE ? ORDER BY updatedAt DESC LIMIT 1",
-          ["%" + last10 + "%"]
+        // Priority 1: Check user saved contacts / phonebook
+        const [savedContact] = await query(
+          "SELECT name FROM contact WHERE uid = ? AND (mobile = ? OR mobile LIKE ?) LIMIT 1",
+          [uid, sender_mobile, "%" + last10]
         );
-        if (crmLead?.name && crmLead.name !== "NA") {
-          sender_name = crmLead.name;
+        if (savedContact?.name && savedContact.name.trim() !== "" && savedContact.name !== "NA") {
+          sender_name = savedContact.name.trim();
+        } else {
+          // Priority 1(b): Check CRM leads
+          const [crmLead] = await query(
+            "SELECT name FROM " + crmDb + ".crm_leads WHERE RIGHT(phone, 10) = ? ORDER BY updatedAt DESC LIMIT 1",
+            [last10]
+          );
+          if (crmLead?.name && crmLead.name.trim() !== "" && crmLead.name !== "NA") {
+            sender_name = crmLead.name.trim();
+          }
         }
       }
     } catch (_) {}
@@ -267,7 +277,7 @@ async function updateChatInMysql({
       await query(
         `UPDATE beta_chats 
          SET last_message = ?, 
-             sender_name = ?, 
+             sender_name = IF(? != 'NA' AND ? != '', ?, sender_name), 
              sender_mobile = ?, 
              origin = ?, 
              origin_instance_id = ?,
@@ -277,6 +287,8 @@ async function updateChatInMysql({
          WHERE chat_id = ? AND uid = ?`,
         [
           last_message,
+          sender_name,
+          sender_name,
           sender_name,
           sender_mobile,
           origin,

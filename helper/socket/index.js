@@ -390,29 +390,37 @@ function processSocketEvent({
               );
 
               if (Array.isArray(crmLeads)) {
-                const leadMap = new Map();
                 for (const lead of crmLeads) {
                   const d = String(lead.phone || "").replace(/\D/g, "").slice(-10);
-                  if (d) {
-                    leadMap.set(d, lead.name);
-                    contacts.push({ name: lead.name, mobile: "91" + d });
-                    contacts.push({ name: lead.name, mobile: d });
+                  if (d && lead.name && lead.name !== "NA") {
+                    contacts.push({ name: lead.name.trim(), mobile: "91" + d });
+                    contacts.push({ name: lead.name.trim(), mobile: d });
                   }
                 }
+              }
 
-                for (const c of chats) {
-                  const d = String(c.sender_mobile || "").replace(/\D/g, "");
-                  const last10 = d.slice(-10);
-                  if (d.length === 10) {
-                    c.sender_mobile = "91" + d;
-                  }
-                  if (leadMap.has(last10)) {
-                    const realName = leadMap.get(last10);
-                    if (!c.sender_name || c.sender_name === "NA" || c.sender_name === c.sender_mobile || c.sender_name === d) {
-                      c.sender_name = realName;
-                    }
-                  }
+              // Unified saved contacts map (Device phonebook + CRM leads)
+              const savedContactMap = new Map();
+              for (const ct of contacts) {
+                const cName = ct?.name ? String(ct.name).trim() : "";
+                if (cName && cName !== "NA") {
+                  const cd = String(ct.mobile || "").replace(/\D/g, "");
+                  const clast10 = cd.length >= 10 ? cd.slice(-10) : cd;
+                  if (clast10) savedContactMap.set(clast10, cName);
                 }
+              }
+
+              for (const c of chats) {
+                const d = String(c.sender_mobile || "").replace(/\D/g, "");
+                const last10 = d.slice(-10);
+                if (d.length === 10) {
+                  c.sender_mobile = "91" + d;
+                }
+                if (savedContactMap.has(last10)) {
+                  // Priority 1: Number is saved in device/phonebook/CRM -> take saved name
+                  c.sender_name = savedContactMap.get(last10);
+                }
+                // Priority 2: If not saved, c.sender_name retains WhatsApp pushName
               }
             }
           } catch (enrichErr) {
@@ -716,29 +724,32 @@ function processSocketEvent({
             [uid],
           );
 
+          const chatDigits = String(updatedChat?.sender_mobile || "").replace(/\D/g, "");
+          const last10 = chatDigits.length >= 10 ? chatDigits.slice(-10) : chatDigits;
+
           const [getContact] = await query(
-            `SELECT * FROM contact WHERE uid = ? AND mobile = ?`,
+            `SELECT * FROM contact WHERE uid = ? AND (mobile = ? OR mobile LIKE ?) LIMIT 1`,
             [
               isAgent ? socket?.userData?.owner_uid : uid,
               updatedChat?.sender_mobile,
+              "%" + last10,
             ],
           );
 
           let contactData = getContact || null;
-          if (!contactData && updatedChat?.sender_mobile) {
+          if (contactData?.name && contactData.name.trim() !== "" && contactData.name !== "NA") {
+            // Priority 1: Saved Contact Name in Device/Phonebook
+            updatedChat.sender_name = contactData.name.trim();
+          } else if (last10 && last10.length >= 7) {
             try {
               const crmDb = process.env.CRM_DB_NAME || "stockology_db_backup";
-              const digits = String(updatedChat.sender_mobile).replace(/\D/g, "");
-              const last10 = digits.length >= 10 ? digits.slice(-10) : digits;
               const [crmLead] = await query(
-                `SELECT name, phone FROM ${crmDb}.crm_leads WHERE phone LIKE ? ORDER BY updatedAt DESC LIMIT 1`,
-                ["%" + last10 + "%"]
+                `SELECT name, phone FROM ${crmDb}.crm_leads WHERE RIGHT(phone, 10) = ? ORDER BY updatedAt DESC LIMIT 1`,
+                [last10]
               );
-              if (crmLead?.name) {
-                contactData = { name: crmLead.name, mobile: updatedChat.sender_mobile };
-                if (!updatedChat.sender_name || updatedChat.sender_name === "NA" || updatedChat.sender_name === updatedChat.sender_mobile) {
-                  updatedChat.sender_name = crmLead.name;
-                }
+              if (crmLead?.name && crmLead.name.trim() !== "" && crmLead.name !== "NA") {
+                contactData = { name: crmLead.name.trim(), mobile: updatedChat.sender_mobile };
+                updatedChat.sender_name = crmLead.name.trim();
               }
             } catch (_) {}
           }
