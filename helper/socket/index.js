@@ -63,6 +63,19 @@ function processSocketEvent({
 }) {
   socket.on("message", async ({ type, payload }) => {
     const { isAgent, uid } = socket?.userData || {};
+    let ownerUid =
+      socket?.userData?.owner_uid ||
+      socket?.decodedToken?.owner_uid ||
+      (isAgent ? socket?.userData?.owner_uid : uid);
+
+    if (!ownerUid) {
+      try {
+        const users = await query("SELECT uid FROM user ORDER BY id ASC LIMIT 1");
+        if (users && users.length > 0) {
+          ownerUid = users[0].uid;
+        }
+      } catch (_) {}
+    }
 
     try {
       switch (type) {
