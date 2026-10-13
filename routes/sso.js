@@ -438,6 +438,11 @@ router.post("/devices/create", async (req, res) => {
       [ownerUid, title, uniqueId, otherData]
     );
 
+    // Clean up any stale session files/socket before generating a fresh QR session
+    try {
+      await deleteSession(uniqueId);
+    } catch (_) {}
+
     // Trigger QR session generation
     try {
       await createSession(uniqueId, title.length > 20 ? title.slice(0, 20) : title);
@@ -462,20 +467,40 @@ router.get("/devices/:uniqueId/status", async (req, res) => {
       return res.status(404).json({ success: false, msg: "Device not found" });
     }
     const inst = instances[0];
-    const session = getSession(uniqueId);
+    let session = getSession(uniqueId);
+
+    // If session is not active in memory and device is still GENERATING or INACTIVE, re-trigger createSession
+    if (!session && inst.status !== "ACTIVE" && inst.status !== "CONNECTED") {
+      try {
+        await createSession(uniqueId, inst.title || "Chrome");
+        session = getSession(uniqueId);
+      } catch (sessErr) {
+        console.warn("createSession on status check notice:", sessErr.message);
+      }
+    }
+
     let isConnected = false;
     if (session) {
       try {
-        isConnected = Boolean(session.user);
+        isConnected = Boolean(session.user || session.authState?.creds?.me);
       } catch (_) {}
     }
+    if (inst.status === "ACTIVE" || inst.status === "CONNECTED") {
+      isConnected = true;
+    }
+
+    const currentStatus = isConnected ? "CONNECTED" : inst.status;
+
     res.json({
       success: true,
-      status: inst.status,
+      status: currentStatus,
       number: inst.number,
-      qr: inst.qr,
+      qr: isConnected ? null : inst.qr,
       isConnected,
-      device: inst
+      device: {
+        ...inst,
+        status: currentStatus,
+      }
     });
   } catch (err) {
     console.error("Error checking device status:", err);

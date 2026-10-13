@@ -14,7 +14,8 @@ let makeWASocket,
   downloadMediaMessage,
   getUrlInfo,
   generateProfilePicture,
-  useMultiFileAuthState;
+  useMultiFileAuthState,
+  Browsers;
 
 // Load baileys functions when needed
 async function loadBaileysIfNeeded() {
@@ -30,6 +31,7 @@ async function loadBaileysIfNeeded() {
       getUrlInfo,
       generateProfilePicture,
       useMultiFileAuthState,
+      Browsers,
     } = baileys);
     baileysLoaded = true;
   }
@@ -55,8 +57,16 @@ const MYSQL_CONFIG = {
 // Local file storage
 const fs = require("fs");
 const path = require("path");
-const sessionsDir = (sessionId = "") =>
-  path.join(process.cwd(), "sessions", sessionId ? `md_${sessionId}` : "");
+const SESSIONS_BASE_DIR = path.join(__dirname, "../../../sessions");
+const sessionsDir = (sessionId = "") => {
+  const dir = sessionId ? path.join(SESSIONS_BASE_DIR, `md_${sessionId}`) : SESSIONS_BASE_DIR;
+  if (!fs.existsSync(dir)) {
+    try {
+      fs.mkdirSync(dir, { recursive: true });
+    } catch (_) {}
+  }
+  return dir;
+};
 
 // Active connections tracking
 const activeConnections = new Map();
@@ -183,23 +193,10 @@ const isSessionExists = (sessionId) => {
 const deleteSessionFiles = async (sessionId) => {
   const sessionDir = sessionsDir(sessionId);
   try {
-    await fs.promises.access(sessionDir);
-  } catch {
-    return; // directory doesn't exist
+    await fs.promises.rm(sessionDir, { recursive: true, force: true });
+  } catch (err) {
+    newLogger.warn(`Could not delete session files for ${sessionId}:`, err.message);
   }
-
-  const files = await fs.promises.readdir(sessionDir);
-
-  for (const file of files) {
-    const filePath = path.join(sessionDir, file);
-    const stat = await fs.promises.lstat(filePath);
-    if (stat.isDirectory()) {
-      await deleteSessionFiles(filePath);
-    } else {
-      await fs.promises.unlink(filePath);
-    }
-  }
-  await fs.promises.rmdir(sessionDir);
 };
 
 // ============= AUTH STATE HANDLER =============
@@ -291,35 +288,52 @@ const createSession = async (
     await loadConfigFromDatabase();
 
     const logger = pino({ level: "silent" });
-    const { error, version } = await fetchLatestBaileysVersion();
-
-    if (error) {
-      newLogger.log(
-        `Session: ${sessionId} | No connection, check your internet.`,
-      );
-      return "No internet connection";
+    let waVersion;
+    try {
+      const vResult = await fetchLatestBaileysVersion();
+      if (vResult?.version) waVersion = vResult.version;
+    } catch (vErr) {
+      newLogger.warn(`fetchLatestBaileysVersion notice for ${sessionId}:`, vErr.message);
     }
+
+    // Clean up any existing socket reference for this session
+    const existingSock = activeConnections.get(sessionId);
+    if (existingSock) {
+      try {
+        existingSock.end?.();
+      } catch (_) {}
+    }
+
+    // Ensure session directory exists
+    sessionsDir(sessionId);
 
     // Get authentication state based on storage method
     const { state, saveCreds, removeCreds } = await getAuthState(sessionId);
 
+    // Standard browser signature accepted by WhatsApp Noise handshake on cloud servers
+    const browserConfig = Browsers?.ubuntu ? Browsers.ubuntu("Chrome") : ["Ubuntu", "Chrome", "22.04.4"];
+
     // Create WhatsApp connection
-    const sock = makeWASocket({
+    const sockOptions = {
       auth: {
         creds: state.creds,
         keys: makeCacheableSignalKeyStore(state.keys, logger),
       },
-      version,
       logger,
       printQRInTerminal: false,
-      browser: [title, "", ""],
-      syncFullHistory: options.syncFullHistory,
+      browser: browserConfig,
+      syncFullHistory: Boolean(options.syncFullHistory),
       defaultQueryTimeoutMs: 60000,
       connectTimeoutMs: 60000,
       keepAliveIntervalMs: 30000,
       markOnlineOnConnect: true,
-      generateHighQualityLinkPreview: true,
-    });
+      generateHighQualityLinkPreview: false,
+    };
+    if (waVersion) {
+      sockOptions.version = waVersion;
+    }
+
+    const sock = makeWASocket(sockOptions);
 
     // Store active connection
     activeConnections.set(sessionId, sock);
@@ -475,12 +489,14 @@ const createSession = async (
       async ({ connection, lastDisconnect, qr }) => {
         if (connection === "open") {
           try {
-            const userData = sock.user || {};
+            const userData = sock.user || sock.authState?.creds?.me || {};
+            const phoneNumber = extractPhoneNumber(userData?.id);
+            newLogger.log(`Session ${sessionId} connected successfully! Phone: ${phoneNumber}`);
             await query(
-              "UPDATE instance SET status = ?, number = ?, data = ? WHERE uniqueId = ?",
+              "UPDATE instance SET status = ?, number = ?, data = ?, qr = NULL WHERE uniqueId = ?",
               [
                 "ACTIVE",
-                extractPhoneNumber(userData?.id) || null,
+                phoneNumber || null,
                 userData?.id ? JSON.stringify(userData) : null,
                 sessionId,
               ],
@@ -490,8 +506,14 @@ const createSession = async (
           }
         } else if (connection === "close") {
           const statusCode = lastDisconnect?.error?.output?.statusCode;
+          const isLoggedOut = statusCode === DisconnectReason.loggedOut;
+          const isRestart = statusCode === DisconnectReason.restartRequired || statusCode === 515;
 
-          if (statusCode === DisconnectReason.loggedOut) {
+          newLogger.log(
+            `Session ${sessionId} connection closed (code: ${statusCode}, isRestart: ${isRestart}, isLoggedOut: ${isLoggedOut})`
+          );
+
+          if (isLoggedOut) {
             newLogger.log(`Session ${sessionId} logged out`);
             activeConnections.delete(sessionId);
 
@@ -502,7 +524,7 @@ const createSession = async (
             await deleteSessionData(sessionId);
 
             try {
-              await query("UPDATE instance SET status = ? WHERE uniqueId = ?", [
+              await query("UPDATE instance SET status = ?, qr = NULL WHERE uniqueId = ?", [
                 "INACTIVE",
                 sessionId,
               ]);
@@ -510,10 +532,14 @@ const createSession = async (
               newLogger.error("Database update error (logout):", error);
             }
           } else {
+            // Reconnect logic:
+            // Crucial: Code 515 (restartRequired) is sent by WhatsApp server right after scanning QR code to negotiate keys.
+            // It MUST reconnect almost immediately (500ms) or the mobile device's pairing window times out!
+            const reconnectDelay = isRestart ? 500 : 5000;
             newLogger.log(
-              `Session ${sessionId} disconnected (code: ${statusCode}), reconnecting...`,
+              `Session ${sessionId} reconnecting in ${reconnectDelay}ms (code: ${statusCode})...`
             );
-            setTimeout(() => createSession(sessionId, title, options), 5000);
+            setTimeout(() => createSession(sessionId, title, options), reconnectDelay);
           }
         }
 

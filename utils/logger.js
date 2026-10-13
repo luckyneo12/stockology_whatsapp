@@ -1,17 +1,15 @@
-const isLogging = process.env.NODE_ENV === "logs";
-
 const logger = {
   log: (...args) => {
-    if (isLogging) console.log(...args);
+    console.log("[WhatsApp]", ...args);
   },
   error: (...args) => {
-    if (isLogging) console.error(...args);
+    console.error("[WhatsApp ERROR]", ...args);
   },
   warn: (...args) => {
-    if (isLogging) console.warn(...args);
+    console.warn("[WhatsApp WARN]", ...args);
   },
   dir: (obj, options) => {
-    if (isLogging) console.dir(obj, options);
+    console.dir(obj, options);
   },
 };
 
