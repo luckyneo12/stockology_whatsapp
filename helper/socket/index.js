@@ -66,7 +66,9 @@ function processSocketEvent({
     let ownerUid =
       socket?.userData?.owner_uid ||
       socket?.decodedToken?.owner_uid ||
-      (isAgent ? socket?.userData?.owner_uid : uid);
+      (isAgent ? socket?.userData?.owner_uid : uid) ||
+      socket?.userData?.uid ||
+      socket?.decodedToken?.uid;
 
     if (!ownerUid) {
       try {
@@ -1620,36 +1622,55 @@ function processSocketEvent({
           break;
         }
 
-        case "delete_chat":
-          const { chatId: delChatId, type: deleteType } = payload;
-          if (delChatId && deleteType) {
+        case "delete_chat": {
+          const { chatId: delChatId, type: deleteType } = payload || {};
+          let targetOwnerUid =
+            (typeof ownerUid !== "undefined" && ownerUid) ||
+            socket?.userData?.owner_uid ||
+            socket?.decodedToken?.owner_uid ||
+            (socket?.userData?.isAgent ? socket?.userData?.owner_uid : socket?.userData?.uid) ||
+            socket?.userData?.uid ||
+            socket?.decodedToken?.uid;
+
+          if (!targetOwnerUid) {
+            try {
+              const users = await query("SELECT uid FROM user ORDER BY id ASC LIMIT 1");
+              if (users && users.length > 0) {
+                targetOwnerUid = users[0].uid;
+              }
+            } catch (_) {}
+          }
+
+          if (delChatId && deleteType && targetOwnerUid) {
+            const userUid = socket?.userData?.uid || targetOwnerUid;
             await query(
-              `DELETE FROM beta_chats WHERE chat_id = ? AND uid = ?`,
-              [delChatId, ownerUid],
+              `DELETE FROM beta_chats WHERE chat_id = ? AND (uid = ? OR uid = ?)`,
+              [delChatId, targetOwnerUid, userUid],
             );
             const metaMediaFolder = `${__dirname}/../../client/public/meta-media`;
             const conversationData = await query(
-              `SELECT * FROM beta_conversation WHERE chat_id = ? AND uid = ?`,
-              [delChatId, ownerUid],
+              `SELECT * FROM beta_conversation WHERE chat_id = ? AND (uid = ? OR uid = ?)`,
+              [delChatId, targetOwnerUid, userUid],
             );
             await deleteMediaFromConversation({
               mediaFolderPath: metaMediaFolder,
               type: deleteType,
-              uid: ownerUid,
+              uid: targetOwnerUid,
               chatId: delChatId,
               conversationData,
             });
 
             if (deleteType === "delete") {
               await query(
-                `DELETE FROM beta_chats WHERE chat_id = ? AND uid = ?`,
-                [delChatId, ownerUid],
+                `DELETE FROM beta_chats WHERE chat_id = ? AND (uid = ? OR uid = ?)`,
+                [delChatId, targetOwnerUid, userUid],
               );
             }
 
             socket.emit("request_update_chat_list", {});
           }
           break;
+        }
 
         case "save_as_context":
           const {
